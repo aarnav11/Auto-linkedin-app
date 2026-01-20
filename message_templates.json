@@ -1,0 +1,51 @@
+{
+  "positive_followup": {
+    "template": "Hi {name}, thanks for your positive response! I'd love to learn more about {company}'s current challenges with {industry_topic}. Would you be open to a brief 15-minute call this week?",
+    "triggers": [
+      "interested",
+      "sounds good",
+      "tell me more",
+      "yes"
+    ]
+  },
+  "objection_handling": {
+    "template": "I understand {name}. Many {title}s at companies like {company} have similar concerns. What if I could show you how we've helped similar companies overcome this exact challenge in just 15 minutes?",
+    "triggers": [
+      "not interested",
+      "no budget",
+      "no time",
+      "already have"
+    ]
+  },
+  "demo_request": {
+    "template": "Hi {name}, I'd be happy to show you exactly how this works for {company}. I have a few slots available this week - would Tuesday or Wednesday work better for a quick 20-minute demo?",
+    "triggers": [
+      "demo",
+      "show me",
+      "how does it work",
+      "see it in action"
+    ]
+  },
+  "pricing_inquiry": {
+    "template": "Hi {name}, great question! Our pricing depends on {company}'s specific needs. I'd love to understand your requirements better so I can provide accurate pricing. Could we schedule a brief call?",
+    "triggers": [
+      "price",
+      "cost",
+      "how much",
+      "pricing",
+      "budget"
+    ]
+  },
+  "referral_request": {
+    "template": "Thanks {name}! I appreciate that. Do you know anyone at {company} or in your network who might benefit from this? I'd be happy to provide value to your connections as well.",
+    "triggers": [
+      "not the right person",
+      "talk to",
+      "someone else handles"
+    ]
+  },
+  "standard_proposal": {
+    "template": "Hi {name},\n\As promised, here is the information on our services. At Espial Solutions, we focus on [Your Service 1] and [Your Service 2] to help companies like {company} achieve [Your Key Benefit].\n\nYou can see a few of our case studies here: [Your Case Study Link]\n\nI'd be happy to discuss how this could apply to your specific needs. Are you free for a brief call next week?\n\nBest,\n[Your Name]",
+    "triggers": []
+  }
+}

@@ -4,41 +4,135 @@ import time
 import logging
 import random
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional
 from dataclasses import asdict
 import hashlib
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
+from enum import Enum
 # Import your data models
 from models import Contact, ConversationMetrics, ConversationStage, MessageIntent
 
 logger = logging.getLogger(__name__)
 
+class InboxPlatform(Enum):
+    LINKEDIN = "linkedin"
+    SALES_NAVIGATOR = "sales_navigator"
+
 class EnhancedAIInbox:
     """LinkedHelper 2 style AI inbox with advanced features"""
     
-    def __init__(self, gemini_model=None):
+    def __init__(self, gemini_model=None, client_instance=None):
         self.model = gemini_model
+        self.client = client_instance
         self.conversations_db = "conversations_db.json"
         self.leads_db = "leads_db.json"
         self.templates_db = "message_templates.json"
         self.settings_file = "inbox_settings.json"
+        self.replied_db = "replied_contacts.json" 
         
-        # Load or create databases
         self.conversations = self.load_json_db(self.conversations_db, {})
         self.leads = self.load_json_db(self.leads_db, {})
         self.templates = self.load_json_db(self.templates_db, self.get_default_templates())
         self.settings = self.load_json_db(self.settings_file, self.get_default_settings())
         
-        # Response templates by stage and intent
         self.response_strategies = self.build_response_strategies()
         self.active_inbox_sessions = {}
+
+    def get_selectors(self, platform: InboxPlatform) -> Dict[str, List[str]]:
+        """Return CSS selectors based on the platform"""
+        if platform == InboxPlatform.SALES_NAVIGATOR:
+            return {
+                # 1. Conversation List Items (Left Sidebar)
+                "conversation_items": [
+                    "div.artdeco-entity-lockup",            # From your finding (most stable)
+                    ".artdeco-entity-lockup__content",      # From your finding
+                    "li[data-test-thread-list-item]",       # Standard fallback
+                    "div[data-x-thread-list-item]",         
+                    "li.artdeco-list__item"
+                ],
+                # 2. Message Bubbles (The container for a single message)
+                "message_containers": [
+                    "div.message-content",                  # From your finding
+                    "li.thread-history__list-item",
+                    "div.thread-history__list-item",
+                    "[data-test-thread-history-message]",
+                    "div._message-padding--medium_zovuu6"   # From your finding (dynamic hash)
+                ],
+                # 3. Message Text (Inside the bubble)
+                "message_body": [
+                    "p.t-14.white-space-pre-wrap",          # From your finding
+                    ".message-content p",
+                    ".thread-history__message-body",
+                    "[data-test-thread-message-body]"
+                ],
+                # 4. Sender Name (Crucial for "Me" vs "Them" detection)
+                "sender_name": [
+                    ".thread-history__sender-name",
+                    "[data-test-thread-message-sender]",
+                    "span.t-14.t-bold",                     # Generic bold text often used for names
+                    "h3.t-14.t-bold"
+                ],
+                # 5. Input Box (Where we type)
+                "input_box": [
+                    "textarea[name='message']",             # From your finding (Very stable)
+                    "textarea._message-field_jrrmou",       # From your finding
+                    "textarea[placeholder*='Type your message']",
+                    ".compose-form__textarea"
+                ],
+                # 6. Send Button
+                "send_button": [
+                    "button._primary_ps32ck",               # From your finding
+                    "button._button_ps32ck",                # From your finding
+                    "button[type='button']._primary_ps32ck",
+                    "button.compose-form__send-button",
+                    "[data-test-compose-form-send-button]"
+                ],
+                # 7. Participant Name (Header of the chat)
+                "participant_name": [
+                    "[data-test-thread-participant-name]",
+                    ".thread-list-item__participant-name",
+                    "span.thread-list-item__title",
+                    ".artdeco-entity-lockup__title"
+                ]
+            }
+        else:
+            # Standard LinkedIn Selectors (Unchanged)
+            return {
+                "conversation_items": [
+                    "li.msg-conversation-listitem",
+                    "li.msg-conversation-card__row", 
+                    "div.msg-conversation-card"
+                ],
+                "message_containers": [
+                    "li.msg-s-message-list__event",
+                    ".msg-s-message-group",
+                    ".msg-s-event-listitem"
+                ],
+                "message_body": [
+                    ".msg-s-event-listitem__body",
+                    ".msg-s-message-group__body p"
+                ],
+                "sender_name": [
+                    ".msg-s-message-group__name",
+                    ".msg-s-event-listitem__sender-name"
+                ],
+                "participant_name": [
+                    ".msg-entity-lockup__entity-title",
+                    ".msg-conversation-listitem__participant-names"
+                ],
+                "input_box": [
+                    ".msg-form__contenteditable",
+                    "div[role='textbox'][contenteditable='true']"
+                ],
+                "send_button": [
+                    "button.msg-form__send-button"
+                ]
+            }
     
     def load_json_db(self, filename: str, default_data: Any) -> Any:
-        """Load JSON database with error handling"""
         try:
             if os.path.exists(filename):
                 with open(filename, 'r', encoding='utf-8') as f:
@@ -48,52 +142,107 @@ class EnhancedAIInbox:
         return default_data
     
     def save_json_db(self, filename: str, data: Any):
-        """Save JSON database with error handling"""
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False, default=str)
         except Exception as e:
             logger.error(f"Could not save {filename}: {e}")
+
+    def mark_contact_as_replied(self, name: str, linkedin_url: str):
+        """
+        Updates local records to indicate this contact has replied.
+        This is critical for stopping follow-up sequences (process_non_responders).
+        """
+        try:
+            # 1. Update client's in-memory active campaigns if available
+            # This prevents the running campaign loop from emailing them if it checks memory
+            if self.client and hasattr(self.client, 'active_campaigns'):
+                for campaign_id, campaign in self.client.active_campaigns.items():
+                    if 'contacts_processed' in campaign:
+                        for contact in campaign['contacts_processed']:
+                            # Match by URL (preferred) or Name
+                            is_match = False
+                            if linkedin_url and contact.get('LinkedIn_profile') and linkedin_url in contact.get('LinkedIn_profile'):
+                                is_match = True
+                            elif name and contact.get('Name') == name:
+                                is_match = True
+                            
+                            if is_match:
+                                contact['has_replied'] = True
+                                logger.info(f"✅ Sync: Marked {name} as replied in active campaign {campaign_id}")
+
+            # 2. Persist to a JSON file so process_non_responders can read it later 
+            # (even after restart or in different threads)
+            replied_data = self.load_json_db(self.replied_db, {})
+            
+            # Use URL as key if available, otherwise name
+            key = linkedin_url if linkedin_url else name
+            
+            if key:
+                replied_data[key] = {
+                    "name": name,
+                    "linkedin_url": linkedin_url,
+                    "replied_at": datetime.now().isoformat()
+                }
+                self.save_json_db(self.replied_db, replied_data)
+                logger.debug(f"💾 Persisted reply status for {name}")
+
+        except Exception as e:
+            logger.error(f"Failed to mark contact as replied: {e}")
         
-    def navigate_to_messaging_safe(self, driver, retries=3):
-        """Navigate to LinkedIn messaging with better recovery"""
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        
-        logger.info("📨 Navigating to LinkedIn messaging...")
+    def navigate_to_messaging_safe(self, driver, platform: InboxPlatform, retries=3):
+        """Navigate to the correct inbox URL based on platform"""
+        url = "https://www.linkedin.com/messaging"
+        if platform == InboxPlatform.SALES_NAVIGATOR:
+            url = "https://www.linkedin.com/sales/inbox"
+
+        logger.info(f"📨 Navigating to {platform.value} inbox: {url}")
         
         for attempt in range(1, retries + 1):
             try:
-                current_url = driver.current_url
+                if url not in driver.current_url:
+                    driver.get(url)
                 
-                # Only navigate if not already on messaging page
-                if "/messaging" not in current_url:
-                    driver.get("https://www.linkedin.com/messaging")
-                
-                # Wait for any of the conversation list elements
-                WebDriverWait(driver, 20).until(
-                    EC.any_of(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "ul.msg-conversations-container__conversations-list")),
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.msg-threads")),
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".msg-conversation-listitem")),
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "aside.msg-s-message-list-container"))
+                # --- UPDATED: Use actual selectors that exist on the page ---
+                if platform == InboxPlatform.SALES_NAVIGATOR:
+                    # Wait for the conversation list items (these ACTUALLY exist)
+                    WebDriverWait(driver, 20).until(
+                        EC.any_of(
+                            # Primary: Conversation items in the sidebar
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "div.artdeco-entity-lockup")),
+                            # Alternate: Content wrapper
+                            EC.presence_of_element_located((By.CSS_SELECTOR, ".artdeco-entity-lockup__content")),
+                            # Fallback: Just check we're on Sales Nav
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "textarea[name='message']"))
+                        )
                     )
-                )
+                else:
+                    # Standard LinkedIn inbox
+                    WebDriverWait(driver, 20).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "ul.msg-conversations-container__conversations-list"))
+                    )
                 
-                # Wait for conversations to be clickable
                 time.sleep(2)
-                
                 logger.info("✅ Successfully loaded messaging page.")
                 return True
                 
             except Exception as e:
-                logger.warning(f"⚠️ Attempt {attempt}/{retries} failed to load messaging: {e}")
+                logger.warning(f"⚠️ Attempt {attempt}/{retries} failed: {e}")
+                
+                # Check for Sales Nav access issues
+                if platform == InboxPlatform.SALES_NAVIGATOR and attempt == 1:
+                    try:
+                        page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+                        if any(keyword in page_text for keyword in ["upgrade", "sales navigator required", "premium"]):
+                            logger.error("❌ Sales Navigator subscription required but not available")
+                            return False
+                    except:
+                        pass
+                
                 if attempt < retries:
                     driver.refresh()
                     time.sleep(random.uniform(3, 6))
         
-        logger.error("❌ Failed to load messaging page after retries.")
         return False
 
     
@@ -174,41 +323,10 @@ class EnhancedAIInbox:
             }
         }
     
-    def analyze_message_intent(self, message: str) -> MessageIntent:
-        """Analyze message intent using AI and keywords"""
-        message_lower = message.lower()
-        
-        # Keyword-based classification (fast)
-        intent_keywords = {
-            MessageIntent.POSITIVE_RESPONSE: ["yes", "interested", "sounds good", "tell me more", "great", "perfect"],
-            MessageIntent.NEGATIVE_RESPONSE: ["no", "not interested", "no thanks", "remove", "unsubscribe"],
-            MessageIntent.QUESTION: ["?", "how", "what", "when", "where", "why", "can you"],
-            MessageIntent.REQUEST_INFO: ["send", "share", "information", "details", "more info", "brochure"],
-            MessageIntent.SCHEDULE_MEETING: ["meeting", "call", "schedule", "calendar", "available", "free time"],
-            MessageIntent.PRICE_INQUIRY: ["price", "cost", "how much", "pricing", "budget", "fees"],
-            MessageIntent.OBJECTION: ["but", "however", "already have", "too expensive", "no budget"],
-            MessageIntent.REFERRAL: ["not the right person", "speak to", "contact", "someone else"],
-            MessageIntent.OUT_OF_OFFICE: ["out of office", "vacation", "away", "back on"],
-            MessageIntent.SPAM: ["viagra", "casino", "lottery", "prince"]
-        }
-        
-        for intent, keywords in intent_keywords.items():
-            if any(keyword in message_lower for keyword in keywords):
-                return intent
-        
-        # AI-based classification for complex cases
-        if self.model:
-            try:
-                ai_intent = self.classify_message_with_ai(message)
-                if ai_intent:
-                    return ai_intent
-            except Exception as e:
-                logger.debug(f"AI intent classification failed: {e}")
-        
-        return MessageIntent.POSITIVE_RESPONSE  # Default
-    
+
     def classify_message_with_ai(self, message: str) -> Optional[MessageIntent]:
-        """Use AI to classify message intent"""
+        """Use AI to classify message intent with improved priority logic"""
+        # Define the prompt with strict hierarchy rules
         prompt = f"""Analyze this LinkedIn message and classify its intent.
 
 Message: "{message}"
@@ -219,11 +337,18 @@ Classify into ONE of these categories:
 - question: Asking questions about the product/service
 - request_info: Wants more information, resources, or details
 - schedule_meeting: Wants to schedule a call, meeting, or demo
+- meeting_confirmation: Confirms a specific time/date for a meeting OR asks for a calendar invite
+- provide_email: The user is ONLY providing their email address (e.g., "my email is example@test.com")
 - price_inquiry: Asking about pricing, costs, or budget
 - objection: Has concerns, objections, or challenges
 - referral: Suggesting to talk to someone else
 - out_of_office: Auto-reply indicating they're away
 - spam: Spam or irrelevant message
+
+PRIORITY RULES:
+1. If the user asks for a meeting invite to be sent to an email, classify as 'meeting_confirmation', NOT 'provide_email'.
+2. If the user suggests a specific time/date, classify as 'meeting_confirmation'.
+3. If the message contains an email but is also a question, classify as 'question'.
 
 Reply with only the category name."""
 
@@ -231,6 +356,7 @@ Reply with only the category name."""
             response = self.model.generate_content(prompt)
             intent_str = response.text.strip().lower()
             
+            # Map the string response to your Enum
             for intent in MessageIntent:
                 if intent.value in intent_str:
                     return intent
@@ -239,6 +365,44 @@ Reply with only the category name."""
             logger.error(f"AI classification error: {e}")
         
         return None
+    
+    def analyze_message_intent(self, message: str) -> MessageIntent:
+        """Analyze message intent prioritizing AI, with keyword fallback"""
+        message_lower = message.lower()
+
+        # 1. PRIMARY: AI-based classification
+        # We try this first because it understands context (e.g., "Send invite to naveen@...")
+        if self.model:
+            try:
+                ai_intent = self.classify_message_with_ai(message)
+                if ai_intent:
+                    return ai_intent
+            except Exception as e:
+                logger.debug(f"AI intent classification failed, falling back to keywords: {e}")
+
+        # 2. FALLBACK: Regex for safety (if AI fails or is slow)
+        # Catches: "Tuesday at 2pm", "12:00 PM IST"
+        time_pattern = r'\d{1,2}(?::\d{2})?\s*(?:am|pm|ist|est|pst|utc|gmt|cet)'
+        if re.search(time_pattern, message_lower) and any(w in message_lower for w in ['tomorrow', 'today', 'next week']):
+            return MessageIntent.MEETING_CONFIRMATION
+
+        # 3. FALLBACK: Keyword-based classification
+        # (Keep your existing intent_keywords dictionary here as the final safety net)
+        intent_keywords = {
+            MessageIntent.MEETING_CONFIRMATION: ["booked", "confirmed", "works for me", "send invite"],
+            MessageIntent.PROVIDE_EMAIL: ["@"],
+            MessageIntent.POSITIVE_RESPONSE: ["yes", "interested", "sounds good"],
+            MessageIntent.NEGATIVE_RESPONSE: ["no", "not interested", "remove"],
+            # ... keep the rest of your keywords ...
+        }
+        
+        for intent, keywords in intent_keywords.items():
+            if any(keyword in message_lower for keyword in keywords):
+                return intent
+        
+        return MessageIntent.POSITIVE_RESPONSE
+    
+    
     
     def calculate_lead_score(self, contact: Contact, conversation_history: List[Dict[str, str]], 
                        metrics: ConversationMetrics) -> int:
@@ -385,6 +549,48 @@ Reply with only the category name."""
         stage = metrics.stage.value
         intent = metrics.intent.value
         
+
+        try:
+            if not self.client:
+                logger.warning("No client instance, cannot perform Google actions.")
+                # We continue to standard AI response instead of raising an exception to ensure reply
+            else:
+                # 1. User wants to schedule a meeting 
+                if intent == MessageIntent.SCHEDULE_MEETING.value:
+                    logger.info("Intent: SCHEDULE_MEETING. Fetching calendar slots...")
+                    slots = self.client.get_calendar_slots(duration_minutes=30, days_ahead=7)
+                    if slots:
+                        # Format slots for the AI
+                        formatted_slots = [
+                            datetime.fromisoformat(s).strftime('%A, %B %d at %I:%M %p %Z') for s in slots
+                        ]
+                        slot_context = (
+                            "I've checked the calendar and found some available times. "
+                            f"Here are the next few slots: \n- " + "\n- ".join(formatted_slots) +
+                            "\n\nDo any of these work for you? Or feel free to suggest another time."
+                        )
+                        return self.generate_ai_response(
+                            contact, conversation_history, metrics, 
+                            strategy="propose_meeting_times",
+                            extra_context=slot_context
+                        )
+                    else:
+                        logger.warning("No free slots found, using generic AI response.")
+                        return self.generate_ai_response(contact, conversation_history, metrics, "propose_meeting_generic")
+
+                # 2. User confirms a meeting time
+                elif intent == MessageIntent.MEETING_CONFIRMATION.value:
+                    logger.info("Intent: MEETING_CONFIRMATION. Attempting to book meeting...")
+                    return self.handle_booking_confirmation(contact, conversation_history)
+
+                # 3. User provides an email (likely for a proposal)
+                elif intent == MessageIntent.PROVIDE_EMAIL.value:
+                    logger.info("Intent: PROVIDE_EMAIL. Attempting to send proposal...")
+                    return self.handle_email_sending(contact, conversation_history)
+
+        except Exception as e:
+            logger.error(f"Error during smart response action: {e}")
+        
         # Get response strategy
         strategy = self.response_strategies.get(stage, {}).get(intent, "general_response")
         
@@ -399,13 +605,24 @@ Reply with only the category name."""
         return self.generate_template_response(contact, last_message, strategy)
     
     def generate_ai_response(self, contact: Contact, conversation_history: List[Dict[str, str]], 
-                           metrics: ConversationMetrics, strategy: str) -> str:
+                           metrics: ConversationMetrics, strategy: str, extra_context: str = "") -> str:
         """Generate AI response with full context"""
+        COMPANY_DETAILS = (
+    "At Espial Solutions, we specialize in digital marketing services, including SEO, Social Media Marketing, and PPC Campaign Management. "
+    "We help businesses like {company} increase their online visibility and generate qualified leads through our innovative marketing strategies and data-driven approach."
+).format(company=contact.company or "theirs")
         
+        STANDARD_PROPOSAL_SNIPPET = (
+    "Our standard package includes comprehensive keyword optimization, social media management, and targeted ad campaign setup — "
+    "designed for teams who want to get started quickly and see measurable results. "
+    "Are you currently exploring an SEO, SMM, or PPC plan so we can share the most relevant details?"
+)
         # Format conversation history
         formatted_history = "\n".join([
             f"{msg['sender']}: {msg['message']}" for msg in conversation_history[-5:]
         ])
+
+        context_block = f"ADDITIONAL CONTEXT TO USE:\n{extra_context}\n" if extra_context else ""
         
         prompt = f"""You are a professional LinkedIn sales assistant. Generate a personalized response based on the context below.
 
@@ -422,7 +639,10 @@ CONVERSATION CONTEXT:
 
 RECENT MESSAGES:
 {formatted_history}
-
+YOUR RESOURCES (Use these when intent matches):
+1.  **Company Details:** "{COMPANY_DETAILS}"
+2.  **Standard Proposal Info:** "{STANDARD_PROPOSAL_SNIPPET}"
+{context_block}
 RESPONSE STRATEGY: {strategy}
 
 GUIDELINES:
@@ -430,10 +650,11 @@ GUIDELINES:
 2. Address their specific message/question
 3. Match their communication style and tone
 4. Keep it concise (2-3 sentences max)
-5. Include a soft call-to-action when appropriate
-6. Use their name naturally
-7. Reference their company/industry when relevant
-
+5.  **If Strategy is 'propose_meeting_times':** Use the "ADDITIONAL CONTEXT" (the list of times) to propose the meeting. Ask them to confirm one or suggest another.
+6.  **If Strategy is 'propose_meeting_generic':** Propose a call and ask for their availability.
+7.  **If Intent is 'request_info':** Use the 'Company Details' resource.
+8.  **If Intent is 'price_inquiry':** Use the 'Standard Proposal Info' resource and ask for the best email to send details to.
+9. Use their name naturally.
 Generate a response:"""
 
         try:
@@ -445,14 +666,23 @@ Generate a response:"""
             ai_message = ai_message.strip('"\'')
             
             # Ensure reasonable length
-            if len(ai_message) > 300:
-                ai_message = ai_message[:297] + "..."
-            
+            if len(ai_message) > 400:
+                ai_message = ai_message[:397] + "..."
+
             return ai_message
             
         except Exception as e:
             logger.error(f"AI response generation failed: {e}")
-            return self.generate_template_response(contact, conversation_history[-1].get('message', ''), strategy)
+            # Check specifically for Quota errors
+            if "429" in str(e) or "Quota" in str(e) or "QUOTA_EXCEEDED" in str(e):
+                logger.critical("⚠️ GEMINI QUOTA EXCEEDED. Switching to template fallback.")
+            
+            # FALLBACK: Use the template generator instead of returning empty/error
+            return self.generate_template_response(
+                contact, 
+                conversation_history[-1].get('message', '') if conversation_history else '', 
+                strategy
+            )
     
     def generate_template_response(self, contact: Contact, last_message: str, strategy: str) -> str:
         """Generate template-based response"""
@@ -473,17 +703,17 @@ Generate a response:"""
         return f"Hi {name}, thanks for your message! I'll review this and get back to you with a thoughtful response soon."
     
     
-    def save_processed_conversations(self, filename: str, conversation_ids: set):
-        """Save processed conversation IDs to prevent re-processing - IMPROVED"""
+    def _save_processed_conversations_enhanced(self, filename: str, conversations_data: dict):
+        """Save processed conversations with enhanced metadata"""
         try:
             data = {
                 'date': datetime.now().strftime("%Y-%m-%d"),
-                'conversations': list(conversation_ids),
+                'conversations_data': conversations_data,
                 'saved_at': datetime.now().isoformat()
             }
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
-            logger.info(f"💾 Saved {len(conversation_ids)} processed conversation IDs to {filename}")
+            logger.info(f"💾 Saved {len(conversations_data)} processed conversation records to {filename}")
         except Exception as e:
             logger.error(f"❌ Could not save processed conversations: {e}")
     
@@ -548,77 +778,22 @@ Generate a response:"""
         
         return contact
     
-    def find_all_conversations(self, driver) -> List:
-        """Find all conversation items with enhanced detection"""
-        from selenium.webdriver.common.by import By
-        
-        # Wait for conversations to load
-        time.sleep(2)
-        
-        # Multiple selector strategies for conversation items
-        selectors = [
-            "li.msg-conversation-listitem",
-            "li.msg-conversation-card__row", 
-            "li[data-view-name='conversation-list-item']",
-            "div.msg-conversation-card",
-            "li.msg-conversations-container__conversations-list-item",
-            "div[class*='msg-conversation']",
-            "li[class*='conversation-list']"
-        ]
-        
-        all_items = []
+    def find_all_conversations(self, driver, platform: InboxPlatform) -> List:
+        """Find conversation items using platform-specific selectors"""
+        selectors = self.get_selectors(platform)["conversation_items"]
         
         for selector in selectors:
             try:
                 items = driver.find_elements(By.CSS_SELECTOR, selector)
-                if items and len(items) > 0:
-                    # Filter out hidden or non-visible items
-                    visible_items = [item for item in items if item.is_displayed()]
-                    if visible_items:
-                        logger.info(f"✅ Found {len(visible_items)} visible conversations with: {selector}")
-                        all_items = visible_items
-                        break
-            except Exception as e:
-                logger.debug(f"Selector {selector} failed: {e}")
+                visible_items = [item for item in items if item.is_displayed()]
+                if visible_items:
+                    logger.info(f"✅ Found {len(visible_items)} conversations ({platform.value}) using: {selector}")
+                    return visible_items
+            except Exception:
                 continue
         
-        if not all_items:
-            logger.warning("❌ No conversations found with any selector")
-            return []
-        
-        # Log detailed information about what we found
-        logger.info(f"📊 Conversation breakdown:")
-        unread_count = 0
-        
-        for idx, item in enumerate(all_items[:5]):  # Check first 5 for debugging
-            try:
-                classes = item.get_attribute('class') or ''
-                aria_label = item.get_attribute('aria-label') or ''
-                
-                # Check for unread indicators
-                has_unread_class = 'unread' in classes.lower()
-                has_unread_label = 'unread' in aria_label.lower()
-                
-                try:
-                    unread_badge = item.find_elements(By.CSS_SELECTOR, 
-                        '.msg-conversation-card__unread-count, [data-test-id="unread-indicator"], .artdeco-entity-lockup__badge')
-                    has_unread_badge = len(unread_badge) > 0
-                except:
-                    has_unread_badge = False
-                
-                is_unread = has_unread_class or has_unread_label or has_unread_badge
-                
-                if is_unread:
-                    unread_count += 1
-                
-                logger.debug(f"  - Conv #{idx}: Unread={is_unread} (class={has_unread_class}, label={has_unread_label}, badge={has_unread_badge})")
-                
-            except Exception as e:
-                logger.debug(f"  - Conv #{idx}: Could not analyze - {e}")
-        
-        logger.info(f"📬 Detected {unread_count} unread conversations (out of {min(5, len(all_items))} checked)")
-        
-        return all_items
+        logger.warning(f"❌ No conversations found for {platform.value}")
+        return []
 
     def save_conversation_data(self, conversation_id: str, contact: Contact, 
                          conversation_history: List[Dict[str, str]], metrics: ConversationMetrics):
@@ -641,53 +816,59 @@ Generate a response:"""
         self.save_json_db(self.conversations_db, self.conversations)
 
     def extract_conversation_details_from_driver(self, driver) -> Dict[str, Any]:
-        """Extract conversation details directly from driver - FIXED VERSION"""
-        # **FIX:** Import By class
+        """Extract conversation details directly from driver (Updated for Sales Nav)"""
         from selenium.webdriver.common.by import By
         conversation_details = {}
         
         try:
-            # Wait a bit for details to load
+            # Wait briefly for header to settle
             time.sleep(1)
             
-            # Extract participant name with MULTIPLE selectors
+            # --- UPDATED SELECTORS FOR SALES NAV & STANDARD ---
             name_selectors = [
+                # Sales Navigator Specific
+                "[data-test-thread-participant-name]", 
+                ".thread-header__title",
+                "span.thread-list-item__title",
+                ".artdeco-entity-lockup__title",
+                
+                # Standard LinkedIn
                 "h2.msg-entity-lockup__entity-title",
-                ".msg-thread__link-to-profile",
                 "a.msg-thread__link-to-profile",
                 ".msg-overlay-conversation-bubble__participant-name",
-                "h1.msg-entity-lockup__entity-title",
                 ".msg-conversation-container__participant-names h2"
             ]
             
             for selector in name_selectors:
                 try:
-                    name_element = driver.find_element(By.CSS_SELECTOR, selector)
-                    name_text = name_element.text.strip()
-                    if name_text and len(name_text) > 0:
-                        conversation_details['participant_name'] = name_text
-                        logger.info(f"✅ Extracted name: {name_text}")
+                    # Try to find the element
+                    if selector.startswith("//"):
+                        name_elements = driver.find_elements(By.XPATH, selector)
+                    else:
+                        name_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    
+                    for el in name_elements:
+                        if el.is_displayed():
+                            name_text = el.text.strip()
+                            if name_text and len(name_text) > 0:
+                                conversation_details['participant_name'] = name_text
+                                logger.info(f"✅ Extracted name: {name_text}")
+                                break
+                    if 'participant_name' in conversation_details:
                         break
                 except:
                     continue
             
-            # If still not found, try XPath
+            # Fallback if name is still missing
             if 'participant_name' not in conversation_details:
-                try:
-                    name_element = driver.find_element(By.XPATH, "//h2[contains(@class, 'msg-entity-lockup')]")
-                    name_text = name_element.text.strip()
-                    if name_text:
-                        conversation_details['participant_name'] = name_text
-                        logger.info(f"✅ Extracted name (XPath): {name_text}")
-                except:
-                    logger.warning("❌ Could not extract participant name")
-                    conversation_details['participant_name'] = "Unknown"
+                logger.warning("❌ Could not extract participant name")
+                conversation_details['participant_name'] = "Unknown"
             
-            # Extract headline
+            # Extract headline (Optional but helpful)
             headline_selectors = [
-                ".msg-entity-lockup__headline",
-                ".msg-thread__link-to-profile-subtitle",
-                "p.msg-entity-lockup__headline"
+                ".thread-header__subtitle",          # Sales Nav
+                ".msg-entity-lockup__headline",      # Standard
+                ".msg-thread__link-to-profile-subtitle"
             ]
             
             for selector in headline_selectors:
@@ -696,7 +877,6 @@ Generate a response:"""
                     headline_text = headline_element.text.strip()
                     if headline_text:
                         conversation_details['participant_headline'] = headline_text
-                        logger.debug(f"Extracted headline: {headline_text[:50]}...")
                         break
                 except:
                     continue
@@ -706,278 +886,382 @@ Generate a response:"""
         
         return conversation_details
 
-    def process_inbox_enhanced(self, driver, user_name: str, max_replies: int = 20, session_id: str = None, client_instance=None) -> Dict[str, Any]:
+    def process_inbox_enhanced(self, driver, user_name: str, max_replies: int = 20, 
+                           session_id: str = None, client_instance=None, 
+                           platform_str: str = "linkedin") -> Dict[str, Any]:
         """
-        Enhanced inbox processing with a robust, rebuilt user confirmation flow.
+        STRICT LOGIC:
+        1. Check ALL messages (Read/Unread) and save latest message.
+        2. Compare with DB:
+        - NEW MESSAGE from THEM → Check Intent → Ask Approval (except MEETING_SCHEDULE)
+        - NO NEW MESSAGE + I was last sender + 3+ days → Follow Up (max 3, then blacklist)
         """
-        logger.info("🤖 Starting inbox processing with refactored user decision logic...")
+        try:
+            platform = InboxPlatform(platform_str)
+        except ValueError:
+            platform = InboxPlatform.LINKEDIN
 
+        logger.info(f"🤖 Starting inbox processing for: {platform.value}")
         self.client = client_instance
+        
         if not session_id:
             import uuid
-            session_id = f"inbox_session_{uuid.uuid4()}"
+            session_id = str(uuid.uuid4())
+
+        if session_id not in self.active_inbox_sessions:
+            self.active_inbox_sessions[session_id] = {
+                'status': 'running',
+                'stop_requested': False,
+                'user_action': None
+            } 
+        # Initialize session tracking
+        if session_id not in self.active_inbox_sessions:
+            self.active_inbox_sessions[session_id] = {
+                'status': 'running',
+                'awaiting_confirmation': False,
+                'current_conversation': None,
+                'user_action': None,
+                'stop_requested': False,
+            }
+
+        # Load persistent state database
+        db_file = f"{platform.value}_inbox_db.json"
+        inbox_db = self.load_json_db(db_file, {})
+
+        processed_count = 0
+        scan_attempt = 0
         
-        logger.info(f"📋 Inbox Session ID: {session_id}")
-        
-        # Initialize session state
-        self.active_inbox_sessions[session_id] = {
-            'status': 'running',
-            'awaiting_confirmation': False,
-            'current_conversation': None,
-            'user_action': None,
-            'stop_requested': False,
-        }
+        while True:
+            # Check for stop request
+            if self.active_inbox_sessions[session_id].get('stop_requested'):
+                logger.info("🛑 Stop requested by user, halting inbox processing.")
+                break
 
-        results = {
-            'success': False,
-            'processed': [], 
-            'auto_replied': 0, 
-            'skipped_by_user': 0,
-            'skipped_on_timeout': 0,
-            'edited_by_user': 0,
-            'errors': 0,
-            'total_processed': 0
-        }
+            scan_attempt += 1
+            logger.info(f"\n--- Inbox Scan Attempt {scan_attempt} (Total Processed: {processed_count}) ---")
 
-        try:
-            logger.info(f"👤 Processing inbox for user: {user_name}")
+            # Navigate to messaging
+            if not self.navigate_to_messaging_safe(driver,platform):
+                logger.error("Failed to navigate to messaging. Retrying in 60s...")
+                self._wait_with_stop_check(session_id, 60)
+                continue
 
-            # Load processed conversations
-            processed_conversation_ids = set()
-            processed_file = "processed_conversations.json"
-            try:
-                if os.path.exists(processed_file):
-                    with open(processed_file, 'r') as f:
-                        saved_processed = json.load(f)
-                        if saved_processed.get('date') == datetime.now().strftime("%Y-%m-%d"):
-                            processed_conversation_ids = set(saved_processed.get('conversations', []))
-                            logger.info(f"Loaded {len(processed_conversation_ids)} previously processed conversations for today.")
-            except Exception as e:
-                logger.debug(f"Could not load processed conversations: {e}")
+            # Get ALL conversations (not just unread)
+            all_conversations = self.find_all_conversations(driver, platform)
+            conversations_to_scan = all_conversations[:15]  # Top 15
 
-            processed_count = 0
-            scan_attempts = 0
-            max_scans = min(max_replies * 2, 50)
-            
-            # Main processing loop
-            while processed_count < max_replies and scan_attempts < max_scans:
-                # Check for stop request
+            if not conversations_to_scan:
+                logger.info("🏁 No conversations found. Waiting 60s.")
+                self._wait_with_stop_check(session_id, 60)
+                continue
+
+            actions_taken = False
+
+            for idx, conv_item in enumerate(conversations_to_scan):
                 if self.active_inbox_sessions[session_id].get('stop_requested'):
-                    logger.info("🛑 Stop requested by user")
                     break
-                    
-                scan_attempts += 1
-                logger.info(f"\n--- Inbox Scan Attempt {scan_attempts} ---")
 
-                if not self.navigate_to_messaging_safe(driver):
-                    logger.error("Failed to navigate to messaging, aborting.")
-                    break
-                
-                time.sleep(3)
-                
+                # Generate unique conversation ID
+                conv_id = self._generate_conversation_id(conv_item, idx)
+                if not conv_id:
+                    continue
+
+                # SKIP BLACKLISTED IMMEDIATELY
+                if inbox_db.get(conv_id, {}).get('status') == 'blacklisted':
+                    continue
+
                 try:
-                    all_conversations = self.find_all_conversations(driver)
-                except AttributeError:
-                    logger.warning("find_all_conversations not found, using direct search")
-                    # Fallback: Find conversations directly
-                    time.sleep(2)
-                    all_conversations = []
-                    selectors = [
-                        "li.msg-conversation-listitem",
-                        "li.msg-conversation-card__row",
-                        "li[data-view-name='conversation-list-item']",
-                        "div.msg-conversation-card",
-                        "li[class*='conversation-list']"
-                    ]
-                    for selector in selectors:
-                        try:
-                            items = driver.find_elements(By.CSS_SELECTOR, selector)
-                            visible_items = [item for item in items if item.is_displayed()]
-                            if visible_items:
-                                logger.info(f"Found {len(visible_items)} conversations with: {selector}")
-                                all_conversations = visible_items
-                                break
-                        except Exception as e:
-                            logger.warning(f"Error finding conversations with {selector}: {e}")
-                            continue
-
-                if not all_conversations:
-                    logger.info("No conversations found on page. Ending process.")
-                    break
-                
-                logger.info(f"Found {len(all_conversations)} potential conversation items on page.")
-                
-                new_conversations_found = False
-                
-                for idx, conv_item in enumerate(all_conversations):
-                    # Check for stop request in inner loop too
-                    if self.active_inbox_sessions[session_id].get('stop_requested'):
-                        break
-                        
-                    conv_id = self._generate_conversation_id(conv_item, idx)
-                    
-                    if not conv_id or conv_id in processed_conversation_ids:
-                        continue
-
-                    logger.info(f"🎯 Found NEW conversation to analyze: {conv_id[:15]}...")
-                    
-                    processed_conversation_ids.add(conv_id)
-                    new_conversations_found = True
+                    # OPEN THE CONVERSATION
+                    logger.info(f"🎯 Processing conversation: {conv_id[:20]}...")
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", 
+                        conv_item
+                    )
+                    time.sleep(0.5)
                     
                     try:
-                        # Click and open conversation
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", conv_item)
-                        time.sleep(1)
-                        
-                        try:
-                            conv_item.click()
-                        except:
-                            driver.execute_script("arguments[0].click();", conv_item)
-                        
-                        # Wait for conversation to load
+                        conv_item.click()
+                    except:
+                        driver.execute_script("arguments[0].click();", conv_item)
+                    
+                    # Wait for conversation to load
+                    if platform == InboxPlatform.SALES_NAVIGATOR:
                         WebDriverWait(driver, 15).until(
                             EC.any_of(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, ".msg-s-message-list")),
-                                EC.presence_of_element_located((By.CSS_SELECTOR, ".msg-thread")),
-                                EC.presence_of_element_located((By.CSS_SELECTOR, ".msg-s-event-listitem"))
+                                # Sales Nav Message List Container
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "ul.thread-history__list")),
+                                EC.presence_of_element_located((By.CSS_SELECTOR, ".thread-history")),
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "textarea[name='message']")) # Fallback: Input box
                             )
                         )
-                        time.sleep(2)
+                    else:
+                        # Standard LinkedIn
+                        WebDriverWait(driver, 10).until(
+                            EC.any_of(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, ".msg-s-message-list")),
+                                EC.presence_of_element_located((By.CSS_SELECTOR, ".msg-thread"))
+                            )
+                        )
+                    time.sleep(1.5)
+
+                    # EXTRACT CONVERSATION DATA
+                    conversation_history = self.get_complete_conversation_history_from_driver(driver, platform, user_name)
+                    if not conversation_history:
+                        continue
+
+                    last_msg_obj = conversation_history[-1]
+                    current_msg_text = last_msg_obj.get('message', '').strip()
+                    current_sender = last_msg_obj.get('sender', 'Unknown')
+                    
+                    # Extract contact info
+                    details = self.extract_conversation_details_from_driver(driver)
+                    contact = self.extract_contact_info_enhanced(driver, details)
+
+                    # COMPARE WITH DATABASE
+                    stored_data = inbox_db.get(conv_id, {})
+                    stored_msg_text = stored_data.get('latest_message_text', '')
+                    
+                    # === CASE A: NEW MESSAGE DETECTED ===
+                    if current_msg_text != stored_msg_text:
+                        logger.info(f"📬 New message detected from: {current_sender}")
                         
-                        # Extract conversation data
-                        conversation_details = self.extract_conversation_details_from_driver(driver)
-                        contact = self.extract_contact_info_enhanced(driver, conversation_details)
-                        conversation_history = self.get_complete_conversation_history_from_driver(driver, user_name)
-                        
-                        if not conversation_history:
-                            logger.warning("No messages found in conversation, skipping.")
+                        # Update DB immediately
+                        inbox_db[conv_id] = {
+                            'latest_message_text': current_msg_text,
+                            'last_message_date': datetime.now().isoformat(),
+                            'last_sender': current_sender,
+                            'follow_up_count': 0,  # Reset on new activity
+                            'status': 'active',
+                            'contact_name': contact.name
+                        }
+                        self.save_json_db(db_file, inbox_db)
+
+                        # If I sent the last message, just update DB and move on
+                        if current_sender == 'You' or current_sender == user_name:
+                            logger.info("👉 Last message was from me. DB updated. Moving on.")
                             continue
-                        
-                        last_message = conversation_history[-1]
-                        
-                        # Skip if last message was from us
-                        if last_message.get('sender', '').lower() == user_name.lower():
-                            logger.info(f"⏭️ Last message was from us ({user_name}), skipping reply.")
-                            continue
-                        
-                        results['total_processed'] += 1
-                        processed_count += 1
-                        
-                        last_message_text = last_message.get('message', '')
-                        intent = self.analyze_message_intent(last_message_text)
+
+                        # THEY sent the last message → Analyze Intent
+                        intent = self.analyze_message_intent(current_msg_text)
+                        logger.info(f"📊 Processing: {contact.name} | Intent: {intent.value}")
+
+                        # Calculate metrics
                         metrics = ConversationMetrics(
-                            intent=intent, 
-                            message_count=len(conversation_history), 
+                            intent=intent,
+                            message_count=len(conversation_history),
                             last_interaction=datetime.now().isoformat()
                         )
                         metrics.lead_score = self.calculate_lead_score(contact, conversation_history, metrics)
                         metrics.stage = self.determine_conversation_stage(conversation_history, intent)
-                        
-                        logger.info(f"📊 Processing conversation with {contact.name}: Lead score: {metrics.lead_score}, Stage: {metrics.stage.value}")
-                        
-                        # Save conversation data
-                        self.save_conversation_data(conv_id, contact, conversation_history, metrics)
-                        
-                        # Check if we should auto-reply
-                        if self.should_auto_reply(metrics, last_message_text):
-                            # Generate AI response
-                            response_message = self.generate_smart_response(contact, conversation_history, metrics)
-                            logger.info(f"💬 Generated response: {response_message[:100]}...")
-                            
-                            # === ENHANCED REPLY PREVIEW FEATURE ===
-                            # Set up awaiting confirmation state
-                            self.active_inbox_sessions[session_id]['awaiting_confirmation'] = True
-                            self.active_inbox_sessions[session_id]['user_action'] = None
-                            current_preview = {
-                                'contact': asdict(contact),
-                                'conversation_history': conversation_history,
-                                'generated_message': response_message,
-                            }
-                            
-                            # Report to dashboard for preview
-                            self._report_inbox_preview_to_dashboard(session_id, current_preview)
-                            
-                            # Wait for user decision with timeout
-                            logger.info(f"⏳ Waiting for user decision for {contact.name}... (Timeout: 5 minutes)")
 
-                            start_wait_time = time.time()
-                            user_decision = None
+                        # STEP 2: CHECK INTENT
+                        if intent in [MessageIntent.SCHEDULE_MEETING, MessageIntent.MEETING_CONFIRMATION]:
+                            # NO APPROVAL NEEDED - Auto-handle meetings
+                            logger.info("🔥 Intent is MEETING. Auto-handling without approval.")
+                            reply = self.generate_smart_response(contact, conversation_history, metrics)
                             
-                            while time.time() - start_wait_time < 300:  # 5 minute timeout
-                                if self.active_inbox_sessions[session_id].get('stop_requested'):
-                                    logger.info("🛑 Stop requested by user during wait")
-                                    break
-                                
-                                user_decision = self.active_inbox_sessions[session_id].get('user_action')
-                                if user_decision:
-                                    logger.info(f"👍 Received user action: {user_decision.get('action')}")
-                                    break
-    
-                                time.sleep(2)
-                            
-                            self.active_inbox_sessions[session_id]['awaiting_confirmation'] = False
-                            action_to_take = 'skip'  # Default to skipping on timeout
-                            
-                            if user_decision:
-                                action_to_take = user_decision.get('action', 'skip')
-
-                            if action_to_take in ['send', 'edit']:
-                                # Prioritize the message from the user action. Fall back to the original
-                                # AI response if no message was provided (i.e., a simple 'send' confirmation).
-                                final_message = user_decision.get('message') or response_message
-                                
-                                is_edited = final_message != response_message
-
-                                if is_edited:
-                                    logger.info(f"✏️ Sending EDITED message to {contact.name} as per user confirmation.")
-                                else:
-                                    logger.info(f"▶️ Sending original message to {contact.name} as per user confirmation.")
-
-                                if self.send_chat_message_enhanced(driver, final_message):
-                                    if is_edited:
-                                        results['edited_by_user'] += 1
-                                    else:
-                                        results['auto_replied'] += 1
-
-                            elif action_to_take == 'skip':
-                                if user_decision:  # Skipped by user click
-                                    logger.info(f"⏭️ Skipping reply to {contact.name} based on user decision.")
-                                    results['skipped_by_user'] += 1
-                                else:  # Skipped on timeout
-                                    logger.warning(f"⌛ Timed out waiting for user action. Skipping reply to {contact.name}.")
-                                    results['skipped_on_timeout'] += 1
+                            if self.send_chat_message_enhanced(driver, reply, platform):
+                                logger.info(f"✅ Auto-replied to {contact.name}")
+                                inbox_db[conv_id]['latest_message_text'] = reply
+                                inbox_db[conv_id]['last_sender'] = 'You'
+                                inbox_db[conv_id]['last_message_date'] = datetime.now().isoformat()
+                                self.save_json_db(db_file, inbox_db)
+                                processed_count += 1
+                                actions_taken = True
                         else:
-                            logger.info(f"⏭️ Skipping auto-reply for {contact.name} (lead score: {metrics.lead_score})")
+                            # ALL OTHER INTENTS → ASK FOR APPROVAL
+                            logger.info(f"✋ Intent is {intent.value}. Asking for approval.")
+                            suggested_reply = self.generate_smart_response(contact, conversation_history, metrics)
                             
-                    except Exception as e:
-                        logger.error(f"Error processing conversation {conv_id}: {e}", exc_info=True)
-                        results['errors'] += 1
-                        continue
-                
-                # Save processed conversations after each scan
-                self.save_processed_conversations(processed_file, processed_conversation_ids)
-                
-                if not new_conversations_found:
-                    logger.info("No new conversations found in this scan.")
-                    if processed_count >= max_replies:
-                        break
+                            approved, final_message = self._ask_for_approval(
+                                session_id, contact, current_msg_text, 
+                                suggested_reply, intent.value, driver, platform,
+                                conversation_history=conversation_history
+                            )
+                            
+                            if approved and final_message:
+                                inbox_db[conv_id]['latest_message_text'] = final_message
+                                inbox_db[conv_id]['last_sender'] = 'You'
+                                inbox_db[conv_id]['last_message_date'] = datetime.now().isoformat()
+                                self.save_json_db(db_file, inbox_db)
+                                processed_count += 1
+                                actions_taken = True
+
+                    # === CASE B: NO NEW MESSAGE → CHECK FOLLOW-UP ===
+                    else:
+                        last_sender_was_me = stored_data.get('last_sender') in ['You', user_name]
+                        
+                        if last_sender_was_me:
+                            last_date_str = stored_data.get('last_message_date')
+                            if not last_date_str:
+                                continue
+                            
+                            last_date = datetime.fromisoformat(last_date_str)
+                            days_diff = (datetime.now() - last_date).days
+                            
+                            # RULE: 3+ DAYS OLD
+                            if days_diff >= 3:
+                                current_fu_count = stored_data.get('follow_up_count', 0)
+                                
+                                # RULE: MAX 3 FOLLOW-UPS
+                                if current_fu_count < 3:
+                                    logger.info(f"⏰ {days_diff} days since last message to {contact.name}. Follow-up #{current_fu_count + 1}")
+                                    
+                                    fu_message = self.generate_followup_message(contact, current_fu_count + 1)
+                                    
+                                    # ASK FOR APPROVAL
+                                    approved, final_message = self._ask_for_approval(
+                                        session_id, contact, 
+                                        f"[NO REPLY FOR {days_diff} DAYS]", 
+                                        fu_message, "follow_up", driver, platform
+                                    )
+                                    
+                                    if approved and final_message:
+                                        inbox_db[conv_id]['latest_message_text'] = final_message
+                                        inbox_db[conv_id]['last_message_date'] = datetime.now().isoformat()
+                                        inbox_db[conv_id]['follow_up_count'] = current_fu_count + 1
+                                        self.save_json_db(db_file, inbox_db)
+                                        processed_count += 1
+                                        actions_taken = True
+                                else:
+                                    # BLACKLIST AFTER 3 FOLLOW-UPS
+                                    logger.info(f"💀 Max follow-ups reached for {contact.name}. Blacklisting.")
+                                    inbox_db[conv_id]['status'] = 'blacklisted'
+                                    self.save_json_db(db_file, inbox_db)
+
+                except Exception as e:
+                    logger.error(f"Error processing conversation {conv_id}: {e}")
+                    continue
+
+            # Save state after each cycle
+            self.save_json_db(db_file, inbox_db)
             
-            # Final save
-            self.save_processed_conversations(processed_file, processed_conversation_ids)
+            # Wait before next scan
+            wait_time = 30 if actions_taken else 60
+            logger.info(f"🏁 No new actionable conversations. Waiting {wait_time}s.")
+            self._wait_with_stop_check(session_id, wait_time)
+
+        # Return final results
+        return {
+            'success': True,
+            'total_processed': processed_count,
+            'session_id': session_id
+        }
+        
+    def _ask_for_approval(self, session_id: str, contact, their_message: str, 
+                      suggested_reply: str, intent: str, driver, platform,
+                      conversation_history=None) -> tuple:
+        """
+        Send preview to dashboard and wait for user approval.
+        Returns: (approved: bool, final_message: str or None)
+        """
+        logger.info(f"⏳ Awaiting user approval for {contact.name}...")
+        
+        # 1. Set up the preview state
+        formatted_history = []
+        if conversation_history:
+            for msg in conversation_history:
+                formatted_history.append({
+                    'sender': msg.get('sender','Unknown'),
+                    'text': msg.get('message',''),
+                    'timestamp': msg.get('timestamp','')
+                })
+        
+        self.active_inbox_sessions[session_id]['awaiting_confirmation'] = True
+        self.active_inbox_sessions[session_id]['current_conversation'] = {
+            'contact_name': contact.name,
+            'contact_company': contact.company,
+            'contact_title': contact.title,
+            'their_message': their_message,
+            'suggested_reply': suggested_reply,
+            'intent': intent,
+            'linkedin_url': contact.linkedin_url,
+            'session_id': session_id # Ensure ID is passed for the UI
+        }
+        
+        # 2. Report to dashboard so it appears in the UI
+        self._report_inbox_preview_to_dashboard(session_id, 
+            self.active_inbox_sessions[session_id]['current_conversation'])
+        
+        # 3. Wait Loop (Timeout 10 minutes)
+        start_time = time.time()
+        timeout = 600 
+        
+        logger.info(f"👉 GO TO DASHBOARD: Please approve/edit reply for {contact.name}")
+
+        while time.time() - start_time < timeout:
+            # Check if user stopped the task via dashboard
+            if self.active_inbox_sessions[session_id].get('stop_requested'):
+                logger.info("🛑 Stop requested during approval wait.")
+                break
             
-            results['success'] = True
-            logger.info(f"✅ Inbox processing completed. Processed: {processed_count}, Auto-replied: {results['auto_replied']}")
-            return results
+            # Check if client received an action task from the server
+            user_action = self.active_inbox_sessions[session_id].get('user_action')
+            
+            if user_action:
+                action = user_action.get('action')
+                logger.info(f"👍 Received user action from dashboard: {action}")
+                
+                # Reset state
+                self.active_inbox_sessions[session_id]['awaiting_confirmation'] = False
+                self.active_inbox_sessions[session_id]['current_conversation'] = None
+                self.active_inbox_sessions[session_id]['user_action'] = None
+                
+                if action == 'send':
+                    # Use the message returned from dashboard (allows editing)
+                    final_msg = user_action.get('message', suggested_reply)
                     
-        except Exception as e:
-            logger.error(f"❌ Critical error in inbox processing session {session_id}: {e}", exc_info=True)
-            results['error'] = str(e)
-            return results
-        finally:
-            # Clean up the session state
-            if session_id in self.active_inbox_sessions:
-                del self.active_inbox_sessions[session_id]
-            logger.info(f"🧹 Cleaned up and ended inbox session {session_id}")
+                    # Attempt to send
+                    if self.send_chat_message_enhanced(driver, final_msg, platform):
+                        logger.info(f"✅ Message sent to {contact.name}")
+                        return (True, final_msg)
+                    else:
+                        logger.error(f"❌ Failed to send message to {contact.name}")
+                        return (False, None)
+                        
+                elif action == 'skip':
+                    logger.info(f"⏭️ Skipped {contact.name} by user choice.")
+                    return (False, None)
+                    
+                elif action == 'blacklist':
+                    logger.info(f"🚫 Blacklisting {contact.name} by user choice.")
+                    # Caller logic handles the DB update for blacklisting
+                    return (False, 'BLACKLIST')
+            
+            # Wait small amount before checking again
+            # The Client logic polls the server every 15s, so we just wait here
+            time.sleep(2) 
+        
+        # Timeout handler
+        logger.info(f"⏰ Approval timeout for {contact.name}. Skipping.")
+        self.active_inbox_sessions[session_id]['awaiting_confirmation'] = False
+        self.active_inbox_sessions[session_id]['current_conversation'] = None
+        return (False, None)
+    
+    def _wait_with_stop_check(self, session_id: str, seconds: int):
+        """Wait for specified seconds, checking for stop request every second."""
+        for _ in range(seconds):
+            if self.active_inbox_sessions.get(session_id, {}).get('stop_requested'):
+                return
+            time.sleep(1)
+    
+    def generate_followup_message(self, contact, followup_number: int) -> str:
+        """Generate follow-up messages based on count."""
+        first_name = contact.name.split()[0] if contact.name else "there"
+        
+        if followup_number == 1:
+            return (f"Hi {first_name}, just bumping this up in case it got buried. "
+                    f"I'd love to hear your thoughts when you have a moment.")
+        elif followup_number == 2:
+            return (f"Hi {first_name}, I know things get busy. Is this something "
+                    f"that's still relevant for {contact.company or 'you'}? "
+                    f"If not, just let me know and I'll stop following up.")
+        elif followup_number == 3:
+            return (f"Hi {first_name}, this will be my last follow-up. I assume "
+                    f"now isn't the right time. Feel free to reach out if your "
+                    f"priorities change in the future. Best of luck!")
+        
+        return f"Hi {first_name}, following up on my previous message."
             
     def _generate_conversation_id(self, conv_item, idx):
         """Generate unique conversation ID"""
@@ -999,6 +1283,17 @@ Generate a response:"""
                         thread_match = re.search(r'/messaging/thread/([^/?]+)', href)
                         if thread_match:
                             return f"thread_{thread_match.group(1)}"
+            except:
+                pass
+
+            try:
+                current_url = conv_item.find_element(By.TAG_NAME, "a").get_attribute("href")
+                if "thread" in current_url:
+                    # Extract ID from end of URL
+                    import re
+                    match = re.search(r'thread/([^/?]+)', current_url)
+                    if match:
+                        return f"sn_{match.group(1)}"
             except:
                 pass
 
@@ -1081,92 +1376,56 @@ Generate a response:"""
             self.active_inbox_sessions[session_id]['stop_requested'] = True
             logger.info(f"🛑 Stop requested for inbox session {session_id}")
         
-    def get_complete_conversation_history_from_driver(self, driver, user_name: Optional[str] = "You") -> List[Dict[str, str]]:
-        """Get conversation history with multiple robust selectors for messages and senders."""
-        from selenium.webdriver.common.by import By
+    def get_complete_conversation_history_from_driver(self, driver, platform: InboxPlatform, user_name: str = "You") -> List[Dict[str, str]]:
+        """Extract messages using platform-specific selectors"""
+        selectors = self.get_selectors(platform)
         conversation = []
         
         try:
-            participant_name = "Other"
-            try:
-                # Use a short wait as the name should already be loaded
-                name_elem = WebDriverWait(driver, 3).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "h2.msg-entity-lockup__entity-title, .msg-thread__link-to-profile"))
-                )
-                participant_name = name_elem.text.strip()
-            except Exception:
-                logger.debug("Could not get participant name from header, will rely on message classes.")
-
-            message_container_selectors = [
-                "li.msg-s-message-list__event",
-                "div.msg-s-message-list__event",
-                ".msg-s-message-group",
-                ".msg-s-event-listitem"
-            ]
-            
-            WebDriverWait(driver, 10).until(
-                EC.any_of(*[EC.presence_of_element_located((By.CSS_SELECTOR, sel)) for sel in message_container_selectors])
-            )
-            
+            # 1. Get Message Containers
             message_containers = []
-            for selector in message_container_selectors:
-                try:
-                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements:
-                        message_containers = elements
-                        logger.info(f"Found {len(message_containers)} message containers using selector: {selector}")
-                        break
-                except Exception:
-                    continue
+            for sel in selectors["message_containers"]:
+                elements = driver.find_elements(By.CSS_SELECTOR, sel)
+                if elements:
+                    message_containers = elements
+                    break
 
             if not message_containers:
-                logger.warning("No message containers found with any selector.")
+                logger.warning("No message containers found.")
                 return []
 
+            # 2. Extract Data from Containers
             for container in message_containers:
                 try:
-                    element_classes = container.get_attribute("class") or ""
-                    
-                    is_sender_me = any(me_class in element_classes for me_class in [
-                        "msg-s-message-group--me", 
-                        "msg-s-message-list__event--me",
-                        "msg-s-event-listitem--me"
-                    ])
-                    sender = user_name if is_sender_me else participant_name
-                    
-                    message_bubble_selectors = [
-                        "p.msg-s-event-listitem__body",
-                        ".msg-s-message-group__body p",
-                        "div.msg-s-message-list__body",
-                        "p.msg-s-message-group__body"
-                    ]
-                    
-                    content = ""
-                    for selector in message_bubble_selectors:
+                    # Parse Sender
+                    sender = "Unknown"
+                    for sender_sel in selectors["sender_name"]:
                         try:
-                            bubble = container.find_element(By.CSS_SELECTOR, selector)
-                            content = bubble.text.strip()
-                            if content:
-                                break
-                        except Exception:
-                            continue
+                            el = container.find_element(By.CSS_SELECTOR, sender_sel)
+                            sender = el.text.strip()
+                            if sender: break
+                        except: continue
+
+                    if "you" in sender.lower() or user_name.lower() in sender.lower():
+                        sender = "You"
+
+                    # Parse Body
+                    content = ""
+                    for body_sel in selectors["message_body"]:
+                        try:
+                            el = container.find_element(By.CSS_SELECTOR, body_sel)
+                            content = el.text.strip()
+                            if content: break
+                        except: continue
                     
                     if content:
-                        conversation.append({
-                            "sender": sender,
-                            "message": content,
-                            "timestamp": "" 
-                        })
-                            
-                except Exception as e:
-                    logger.debug(f"Error extracting a single message container: {e}")
+                        conversation.append({"sender": sender, "message": content, "timestamp": ""})
+                except:
                     continue
             
-            logger.info(f"✅ Successfully extracted {len(conversation)} messages from conversation")
             return conversation
-            
         except Exception as e:
-            logger.error(f"❌ Critical error getting conversation history: {e}", exc_info=True)
+            logger.error(f"Error extracting history: {e}")
             return []
     
     def get_conversation_at_index(self, driver, index):
@@ -1180,50 +1439,52 @@ Generate a response:"""
         return None
     
 
-    def send_chat_message_enhanced(self, driver, message):
-        """Send chat message with enhanced error handling"""
-        from selenium.webdriver.common.by import By
+    def send_chat_message_enhanced(self, driver, message, platform: InboxPlatform):
+        """Send message using platform-specific selectors"""
+        selectors = self.get_selectors(platform)
+        
         try:
-            # Find message input
-            input_selectors = [
-                ".msg-form__contenteditable",
-                "div[role='textbox'][contenteditable='true']"
-            ]
-            
+            # 1. Find Input
             message_input = None
-            for selector in input_selectors:
+            for sel in selectors["input_box"]:
                 try:
-                    message_input = WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    message_input = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
                     )
                     break
-                except:
-                    continue
+                except: continue
             
             if not message_input:
+                logger.error("Could not find message input box")
                 return False
-            
-            # Type message
+
+            # 2. Type Message
             message_input.click()
             time.sleep(0.5)
             message_input.clear()
-            
             for char in message:
                 message_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
+                time.sleep(random.uniform(0.01, 0.05)) # Faster typing for Sales Nav usually works better
             
-            # Find and click send button
-            send_button = driver.find_element(By.CSS_SELECTOR, "button.msg-form__send-button[type='submit']")
-            
-            if send_button.is_enabled():
+            time.sleep(1)
+
+            # 3. Find Send Button
+            send_button = None
+            for sel in selectors["send_button"]:
+                try:
+                    send_button = driver.find_element(By.CSS_SELECTOR, sel)
+                    if send_button.is_enabled():
+                        break
+                except: continue
+
+            if send_button:
                 send_button.click()
                 time.sleep(2)
                 return True
             
             return False
-            
         except Exception as e:
-            logger.error(f"Failed to send chat message: {e}")
+            logger.error(f"Failed to send message: {e}")
             return False
         
     def debug_conversations(self, driver) -> Dict[str, Any]:
@@ -1336,3 +1597,132 @@ Generate a response:"""
             logger.warning(f"Could not save debug info: {e}")
         
         return debug_info
+    
+    def handle_booking_confirmation(self, contact: Contact, conversation_history: List[Dict[str, str]]) -> str:
+        if not self.client: return "My apologies, I'm having trouble accessing the calendar."
+
+        logger.info(f"Handling booking confirmation for {contact.name}")
+        
+        # Get the last few messages for context
+        history_text = "\n".join([f"{msg['sender']}: {msg['message']}" for msg in conversation_history[-3:]])
+        
+        # Get the very last message text to check for specific email provided now
+        last_message_text = conversation_history[-1].get('message', '')
+
+        # 1. Use AI to extract the date and time
+        prompt = f"""
+        Read the conversation and extract the specific date and time the user confirmed for a meeting.
+        Today's date is: {datetime.now().strftime('%A, %B %d, %Y')}
+        Conversation: {history_text}
+        Return ONLY the start time in ISO 8601 format. If error, return "ERROR".
+        """
+        
+        try:
+            response = self.model.generate_content(prompt)
+            start_time_str = response.text.strip()
+
+            if "ERROR" in start_time_str or len(start_time_str) < 15:
+                return "Thanks! Just to confirm, what is the full date and time that works for you?"
+
+            # 2. Logic to find the Attendee Email
+            attendee_email = None
+            
+            # A. Priority: Check if they provided an email in the text (Regex)
+            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+            found_emails = re.findall(email_pattern, last_message_text)
+            
+            if found_emails:
+                attendee_email = found_emails[0]
+                logger.info(f"📧 Extracted email from message text: {attendee_email}")
+            else:
+                # B. Fallback: Check stored profile data
+                attendee_email = contact.profile_data.get('email')
+                logger.info(f"📧 Using profile email: {attendee_email}")
+
+            # 3. Book the meeting
+            start_dt = datetime.fromisoformat(start_time_str)
+            end_dt = start_dt + timedelta(minutes=30)
+            
+            # Create a description so YOU know who this is
+            description = f"LinkedIn Contact: {contact.name}\nProfile: {contact.linkedin_url}\n\nContext: Booked via AI Inbox."
+
+            details = {
+                "summary": f"Call with {contact.name} ({contact.company or 'LinkedIn'})",
+                "start_time": start_dt.isoformat(),
+                "end_time": end_dt.isoformat(),
+                "attendee_email": attendee_email, # This will now pass the extracted email
+                "description": description
+            }
+            
+            booking_result = self.client.book_calendar_event(details)
+            
+            if booking_result.get('success'):
+                meet_link = booking_result.get('meet_link', 'Link in invite')
+                
+                # Different response depending on if we found an email to invite
+                if attendee_email:
+                     return f"Great! I've sent a calendar invite to {attendee_email} for {start_dt.strftime('%A at %I:%M %p')}. Looking forward to it!"
+                else:
+                     # If no email found anywhere, confirm time and send link manually
+                     return (
+                        f"Perfect! I've booked that for {start_dt.strftime('%A, %B %d at %I:%M %p')}. "
+                        f"Here is the Google Meet link for our chat: {meet_link}"
+                     )
+            else:
+                logger.error(f"Booking failed: {booking_result.get('error')}")
+                return "My apologies, I ran into an error trying to book that time."
+
+        except Exception as e:
+            logger.error(f"Error in handle_booking_confirmation: {e}")
+            return "I'm having a system error. Could you please repeat the time?"
+
+    def handle_email_sending(self, contact: Contact, conversation_history: List[Dict[str, str]]) -> str:
+        """
+        Uses AI to parse an email from the last message, then sends the proposal.
+        """
+        if not self.client: return "My apologies, I'm having trouble with my email system right now."
+
+        logger.info(f"Handling email sending for {contact.name}")
+        last_message = conversation_history[-1].get('message', '')
+
+        # 1. Use AI to extract the email
+        prompt = f"""
+        Extract the email address from this message.
+        Message: "{last_message}"
+        Return ONLY the email address. If no email is found, return "ERROR".
+        """
+        
+        try:
+            response = self.model.generate_content(prompt)
+            email = response.text.strip()
+
+            if "ERROR" in email or "@" not in email:
+                logger.warning(f"AI could not extract email: {email}")
+                return "Thanks! I couldn't quite catch that. Could you please type out your email address again?"
+
+            logger.info(f"AI extracted email: {email}")
+
+            # 2. Get proposal template and send
+            proposal_subject = f"Proposal for {contact.company}"
+            proposal_body = self.templates.get('standard_proposal', {}).get('template', 
+                "Hi {name},\n\nAs promised, here is some more information on our services..."
+            ).format(name=contact.name.split()[0], company=contact.company)
+            
+            details = {
+                "to_email": email,
+                "subject": proposal_subject,
+                "body": proposal_body
+            }
+            
+            email_result = self.client.send_email(details)
+            
+            if email_result.get('success'):
+                logger.info(f"Sent proposal to {email}")
+                return f"Perfect, thank you. I've just sent the proposal to {email}. Please let me know if you have any questions!"
+            else:
+                logger.error(f"Email sending failed: {email_result.get('error')}")
+                return f"My apologies, I ran into an error trying to send the email to {email}. Could you please confirm the address is correct?"
+
+        except Exception as e:
+            logger.error(f"Error in handle_email_sending: {e}")
+            return "I'm having a system error. Could you please repeat your email address?"

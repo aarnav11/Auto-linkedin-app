@@ -81,14 +81,14 @@ class EnhancedLinkedInAutomationClient:
                 self.model = None
             else:
                 genai.configure(api_key=gemini_api_key)
-                self.model = genai.GenerativeModel('gemini-2.5-flash')
+                self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
                 logger.info("✅ Gemini AI initialized successfully")
         except Exception as e:
             logger.error(f"❌ Gemini AI initialization failed: {e}")
             self.model = None
 
         # Now, initialize EnhancedAIInbox with the created model
-        self.enhanced_inbox = EnhancedAIInbox(gemini_model=self.model)
+        self.enhanced_inbox = EnhancedAIInbox(gemini_model=self.model, client_instance=self)
         
         self.automation_instances = {}
         self.active_campaigns = defaultdict(lambda: {
@@ -109,14 +109,6 @@ class EnhancedLinkedInAutomationClient:
             "end_time": None,
             "driver_errors": 0
         })
-        self.active_collections=defaultdict(lambda: {
-            "status": "idle", # idle | running | completed | failed
-            "urls": [],
-            "max_profiles": 0,
-            "profiles_collected": 0,
-            "progress": 0,
-            "stop_requested": False,
-        })
 
         poll_interval=int(self.config.get('poll_interval_seconds',15))
         try:
@@ -136,7 +128,7 @@ class EnhancedLinkedInAutomationClient:
                 logger.error(f"❌ Error loading config: {e}")
         
         logger.info("📋 No configuration found, launching setup GUI...")
-        return create_config_gui()
+        return create_config_gui(self)
 
     def _get_auth_headers(self):
         """Return authorization headers for dashboard requests"""
@@ -307,9 +299,8 @@ class EnhancedLinkedInAutomationClient:
                 return
                 
             endpoint = f"{SERVER_BASE.rstrip('/')}/api/client-ping"
-            api_key = self.config.get('client_api_key') or self.config.get('gemini_api_key')
             
-            # Include active inbox sessions in the ping
+            # ... (all the payload creation logic is fine) ...
             active_inbox_sessions = []
             if hasattr(self, 'enhanced_inbox') and self.enhanced_inbox:
                 for session_id, session_data in self.enhanced_inbox.active_inbox_sessions.items():
@@ -327,39 +318,20 @@ class EnhancedLinkedInAutomationClient:
                     'platform': platform.system(),
                     'version': '1.0'
                 },
-                'active_inbox_sessions': active_inbox_sessions  # Include inbox sessions
+                'active_inbox_sessions': active_inbox_sessions
             }
             
             headers = self._get_auth_headers()
             
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+            
+            # --- THIS IS THE FIX ---
+            # We no longer need to check for actions here.
             if resp.status_code in (200, 201):
                 logger.debug("💓 Heartbeat ping successful")
-                
-                # Process actions returned by the server
-                data = resp.json()
-                actions = data.get('actions', [])
-
-                logger.info(f"💓 Heartbeat returned {len(actions)} actions")
-                for i, action in enumerate(actions, start=1):
-                    try:
-                        params = action.get('params', {})
-                        keys = list(params.keys())
-                        logger.info(
-                            f"➡️ Action #{i}: type={action.get('type')} id={action.get('id')} "
-                            f"param_keys={keys} session_id_present={'session_id' in params} "
-                            f"process_id_present={'process_id' in params}"
-                        )
-                    except Exception as _ex:
-                        logger.warning(f"➡️ Could not introspect action #{i}: {_ex}")
-
-                if actions:
-                    logger.info(f"📥 Received {len(actions)} actions from heartbeat")
-                    for action in actions:
-                        self.handle_task(action)
-                        
             else:
                 logger.warning(f"💓 Heartbeat ping returned {resp.status_code}: {resp.text[:200]}")
+                
         except Exception as e:
             logger.debug(f"💓 Heartbeat ping failed: {e}")
         
@@ -457,7 +429,7 @@ class EnhancedLinkedInAutomationClient:
             self.report_task_started(task_id, ttype)
             
             driver = None
-            if ttype in ("process_inbox", "send_message", "collect_profiles", "keyword_search", "outreach_campaign"):
+            if ttype in ("process_inbox", "send_message", "collect_profiles", "keyword_search", "outreach_campaign", "sync_network_stats"):
                 driver = self.get_shared_driver()
                 if not driver:
                     raise Exception("Failed to get valid browser session")
@@ -477,6 +449,26 @@ class EnhancedLinkedInAutomationClient:
                 result['payload'] = {'message': 'Inbox processing task has been started.', 'process_id': process_id}
                     
         # ENHANCED INBOX ACTION HANDLING - EXACTLY LIKE OUTREACH
+            elif ttype == "process_inbox":
+                process_id = params.get('process_id', task_id)
+                threading.Thread(
+                    target=self.execute_inbox_task, 
+                    args=(process_id, "linkedin"), # Pass platform
+                    daemon=True
+                ).start()
+                result['success'] = True
+                result['payload'] = {'message': 'LinkedIn Inbox processing started.'}
+                
+            elif ttype == "process_sales_nav_inbox":
+                process_id = params.get('process_id', task_id)
+                threading.Thread(
+                    target=self.execute_inbox_task, 
+                    args=(process_id, "sales_navigator"), # Pass platform
+                    daemon=True
+                ).start()
+                result['success'] = True
+                result['payload'] = {'message': 'Sales Navigator Inbox processing started.'}
+                
             elif ttype == 'inbox_action':
                 params = task.get('params', {})
                 session_id = params.get('session_id')
@@ -506,6 +498,36 @@ class EnhancedLinkedInAutomationClient:
                 else:
                     result['error'] = 'Invalid session_id'
 
+            elif ttype == 'stop_task':
+                params = task.get('params', {})
+                # Look for the new param, but fall back to the old one
+                task_to_stop = params.get('task_to_stop') or params.get('task_id') 
+                logger.info(f"🛑 Received STOP request for task: {task_to_stop}")
+
+                if not task_to_stop:
+                    raise Exception("No task_to_stop or task_id provided in stop_task action")
+
+                # Check and stop active campaigns
+                if task_to_stop in self.active_campaigns:
+                    self.active_campaigns[task_to_stop]['stop_requested'] = True
+                    logger.info(f"Set stop_requested flag for campaign {task_to_stop}")
+
+                # Check and stop active inbox sessions
+                elif self.enhanced_inbox and task_to_stop in self.enhanced_inbox.active_inbox_sessions:
+                    self.enhanced_inbox.stop_inbox_session(task_to_stop)
+                    logger.info(f"Called stop_inbox_session for {task_to_stop}")
+                
+                # Check and stop active keyword searches
+                elif task_to_stop in self.active_searches:
+                    self.active_searches[task_to_stop]['stop_requested'] = True
+                    logger.info(f"Set stop_requested flag for search {task_to_stop}")
+                
+                else:
+                    logger.warning(f"Could not find active task {task_to_stop} to stop. It might have already completed.")
+
+                result['success'] = True
+                result['payload'] = {'message': f"Stop request for {task_to_stop} processed."}
+            
             elif ttype == "outreach_campaign" or ttype == "start_campaign":
                 campaign_id = params.get('campaign_id', task_id)
                 user_config = params.get('user_config', {})
@@ -535,16 +557,7 @@ class EnhancedLinkedInAutomationClient:
                     }
                 self.active_campaigns[campaign_id]['user_action'] = action
                 logger.info(f"📥 Applied campaign_action for {campaign_id}: {action['action']}")
-                return {'success': True}
-                
-            elif ttype == "collect_profiles":
-                collection_id = params.get('collection_id', str(uuid.uuid4()))
-                user_config = params.get('user_config', {})
-                collection_params = params.get('collection_params', {})
-                threading.Thread(target=self.run_sales_navigator_collection, args=(collection_id, user_config, collection_params), daemon=True).start()
-                result['success'] = True
-                result['payload'] = {'message': 'Profile collection started', 'collection_id': collection_id}
-                
+                return {'success': True}              
             # --- THIS BLOCK IS NOW FIXED ---
             elif ttype == "keyword_search":
                 # The main task_id IS the search_id for reporting
@@ -555,7 +568,41 @@ class EnhancedLinkedInAutomationClient:
                 result['success'] = True
                 result['payload'] = {'message': 'Keyword search started', 'search_id': task_id}
             # --- END OF FIX ---
-                
+            elif ttype == "sync_network_stats":
+                threading.Thread(target=self.execute_sync_network_stats_task, args=(task_id,), daemon=True).start()
+                result['success'] = True
+                result['payload'] = {'message': 'Network stats sync started', 'task_id': task_id}    
+            
+            elif ttype == 'process_non_responders':
+                campaign_id = params.get('campaign_id')
+                # Run in thread
+                threading.Thread(target=self.process_non_responders, args=(campaign_id,), daemon=True).start()
+                result['success'] = True
+                result['payload'] = {'message': 'Started processing non-responders'}
+            
+            elif ttype == "process_sales_nav_inbox":
+                process_id = params.get('process_id', task_id)
+                threading.Thread(
+                    target=self.execute_inbox_task, 
+                    args=(process_id, "sales_navigator"), # Pass platform
+                    daemon=True
+                ).start()
+                result['success'] = True
+                result['payload'] = {'message': 'Sales Navigator Inbox processing started.'}
+            
+            elif ttype == "fetch_sales_nav_lists":
+                threading.Thread(target=self.fetch_sales_nav_lists, args=(task_id,), daemon=True).start()
+                result['success'] = True
+                result['payload'] = {'message': 'Fetching Sales Nav lists...'}
+
+            elif ttype == "sales_nav_outreach_campaign":
+                campaign_id = params.get('campaign_id', task_id)
+                user_config = params.get('user_config', {})
+                campaign_params = params.get('campaign_params', {})
+                threading.Thread(target=self.run_sales_nav_outreach_campaign, args=(campaign_id, user_config, campaign_params), daemon=True).start()
+                result['success'] = True
+                result['payload'] = {'message': 'Sales Nav campaign started', 'campaign_id': campaign_id}
+            
             else:
                 raise Exception(f"Unknown task type: {ttype}")
             
@@ -569,7 +616,7 @@ class EnhancedLinkedInAutomationClient:
         finally:
             result['end_time'] = datetime.now().isoformat()
             # For threaded tasks, we report success immediately, the thread reports final status
-            if ttype not in ["outreach_campaign", "start_campaign", "collect_profiles", "keyword_search", "campaign_action"]:
+            if ttype not in ["outreach_campaign", "start_campaign", "collect_profiles", "keyword_search", "campaign_action","sync_network_stats"]:
                 try:
                     self.report_task_result(result)
                 except Exception as report_e:
@@ -607,7 +654,84 @@ class EnhancedLinkedInAutomationClient:
         except Exception as e:
             logger.error(f"Failed to report task result: {e}")
 
+    def get_total_connection_count(self, driver) -> Optional[int]:
+        """Scrape total LinkedIn connections count from user's profile page (stable 2025 method)."""
+        try:
+            logger.info("Syncing network stats: Navigating to user profile page...")
 
+            # Step 1: Navigate to the user's profile
+            driver.get("https://www.linkedin.com/in/")
+            time.sleep(3)
+
+            # Step 2: Wait for the connection count element
+            selector = "span.link-without-visited-state span.t-bold"
+            count_element = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+            )
+
+            count_text = count_element.text.strip()
+            logger.info(f"Found connection count text: '{count_text}'")
+
+            # Step 3: Parse and clean numeric value
+            count_digits = re.sub(r"[^\d]", "", count_text)
+            if not count_digits:
+                logger.warning("Could not parse numeric value from connections text.")
+                return None
+
+            count = int(count_digits)
+            if "+" in count_text and count == 500:
+                logger.info("Detected '500+' display, reporting 501 as proxy.")
+                count = 501
+
+            logger.info(f"✅ Successfully extracted total connections: {count}")
+            return count
+
+        except TimeoutException:
+            logger.error("Timed out waiting for the connections count on profile page.")
+            return None
+        except Exception as e:
+            logger.error(f"Error scraping connection count from profile page: {e}", exc_info=True)
+            return None
+   
+    # --- NEW FUNCTION: Wrapper for the sync task ---
+    def execute_sync_network_stats_task(self, task_id):
+        """Thread-safe wrapper to execute the network stats sync task."""
+        self.browser_lock.acquire()
+        payload = {}
+        error = None
+        success = False
+        try:
+            logger.info(f"🔑 Browser lock acquired for network sync task {task_id}")
+            driver = self.get_shared_driver()
+            if not driver:
+                raise Exception("Failed to get a valid browser session for network sync.")
+            
+            connection_count = self.get_total_connection_count(driver)
+            
+            if connection_count is not None:
+                payload = {'total_connections': connection_count}
+                success = True
+                logger.info(f"✅ Successfully synced network stats. Total connections: {connection_count}")
+            else:
+                error = "Failed to scrape connection count."
+                success = False
+
+        except Exception as e:
+            logger.error(f"❌ A critical error occurred in network sync task {task_id}: {e}", exc_info=True)
+            error = str(e)
+            success = False
+        finally:
+            logger.info(f"🔑 Browser lock released for network sync task {task_id}")
+            self.browser_lock.release()
+            
+            # Report the final result to the server
+            self.report_task_result({
+                'task_id': task_id,
+                'type': 'sync_network_stats',
+                'success': success,
+                'payload': payload,
+                'error': error
+            })
     def report_collection_results_to_dashboard(self, collection_id, results, final=False):
         """Report profile collection results back to dashboard."""
         try:
@@ -1594,7 +1718,275 @@ Return ONLY the message text, no labels or formatting.
             logger.error(f"An error occurred during scraping: {e}")
             
         return profiles
-    def search_and_connect(self, driver, keywords, max_invites=20):
+    
+
+    def fetch_sales_nav_lists(self, task_id):
+        """
+        Navigates to Sales Nav, opens Saved Searches > Leads, and scrapes list details.
+        """
+        self.browser_lock.acquire()
+        lists = []
+        try:
+            logger.info(f"🔑 Browser lock acquired for fetching Sales Nav lists {task_id}")
+            driver = self.get_shared_driver()
+            if not driver:
+                raise Exception("Failed to get browser")
+
+            # 1. Go to Sales Nav Home
+            logger.info("Navigating to Sales Navigator Home...")
+            driver.get("https://www.linkedin.com/sales/home")
+            time.sleep(4)
+
+            # 2. Open Saved Searches
+            # User provided: data-x--link--saved-searches
+            logger.info("Opening Saved Searches panel...")
+            saved_searches_btn = self.find_element_safe(driver, [
+                ("css", "button[data-x--link--saved-searches]"),
+                ("xpath", "//button[contains(@class, '_button_ps32ck') and contains(text(), 'Saved searches')]")
+            ])
+            
+            if not saved_searches_btn:
+                raise Exception("Could not find 'Saved Searches' button")
+            
+            self.safe_click(driver, saved_searches_btn)
+            time.sleep(2)
+
+            # 3. Click "Leads" Tab
+            # User provided: aria-label="Lead- View all lead saved searches"
+            logger.info("Switching to 'Lead' lists tab...")
+            leads_tab = self.find_element_safe(driver, [
+                ("css", "button[aria-label*='Lead- View all lead saved searches']"),
+                ("xpath", "//button[contains(text(), 'Lead')]")
+            ])
+            
+            if leads_tab:
+                self.safe_click(driver, leads_tab)
+                time.sleep(2)
+
+            # 4. Scrape List Titles and URLs
+            # User provided list html: class containing _panel-link_yma0zx
+            logger.info("Scraping list data...")
+            list_elements = driver.find_elements(By.CSS_SELECTOR, "a[href*='/sales/lists/people']")
+            
+            for el in list_elements:
+                try:
+                    title = el.text.strip()
+                    url = el.get_attribute("href")
+                    # Clean up title if it contains counts (e.g., "My List (50)")
+                    if "\n" in title:
+                        title = title.split("\n")[0]
+                    
+                    if title and url:
+                        lists.append({"name": title, "url": url})
+                except:
+                    continue
+            
+            logger.info(f"✅ Found {len(lists)} Sales Nav lists.")
+
+            # Report results
+            self.report_task_result({
+                "task_id": task_id,
+                "type": "fetch_sales_nav_lists",
+                "success": True,
+                "payload": {"lists": lists}
+            })
+
+        except Exception as e:
+            logger.error(f"❌ Error fetching Sales Nav lists: {e}")
+            self.report_task_result({
+                "task_id": task_id,
+                "type": "fetch_sales_nav_lists",
+                "success": False,
+                "error": str(e)
+            })
+        finally:
+            self.browser_lock.release()
+
+    def run_sales_nav_outreach_campaign(self, campaign_id, user_config, campaign_params):
+        """
+        Iterates a specific Sales Nav list, messages leads, generates AI content, 
+        and waits for user approval via Dashboard.
+        """
+        self.browser_lock.acquire()
+        try:
+            list_url = campaign_params.get('list_url')
+            max_contacts = int(campaign_params.get('max_contacts', 10))
+            
+            # Initialize campaign state in self.active_campaigns
+            self.active_campaigns[campaign_id] = {
+                'status': 'running',
+                'progress': 0,
+                'total': max_contacts,
+                'successful': 0,
+                'failed': 0,
+                'skipped': 0,
+                'stop_requested': False,
+                'awaiting_confirmation': False,
+                'current_contact_preview': None,
+                'start_time': datetime.now().isoformat()
+            }
+
+            driver = self.get_shared_driver()
+            
+            logger.info(f"🚀 Starting Sales Nav Outreach on list: {list_url}")
+            driver.get(list_url)
+            time.sleep(5)
+
+            processed_count = 0
+            
+            # Iterate through rows in the list
+            # We look for rows that contain a "Message" button
+            while processed_count < max_contacts:
+                if self.active_campaigns[campaign_id].get('stop_requested'):
+                    break
+
+                # Re-fetch elements every loop to avoid stale elements
+                # Typical Sales Nav list row selector
+                rows = driver.find_elements(By.CSS_SELECTOR, "div.artdeco-list__item, tr.artdeco-list__item")
+                
+                # If we've processed rows on this page, we might need to scroll or paginate
+                # For MVP, we iterate visible rows.
+                
+                if processed_count >= len(rows):
+                    logger.info("Reached end of visible rows. (Pagination logic would go here)")
+                    break
+
+                row = rows[processed_count]
+                
+                try:
+                    # 1. Extract Info
+                    name_elem = row.find_element(By.CSS_SELECTOR, "[data-anonymize='person-name']")
+                    name = name_elem.text.strip()
+                    
+                    try:
+                        company_elem = row.find_element(By.CSS_SELECTOR, "[data-anonymize='company-name']")
+                        company = company_elem.text.strip()
+                    except:
+                        company = "their company"
+                    
+                    try:
+                        headline_elem = row.find_element(By.CSS_SELECTOR, "[data-anonymize='job-title']")
+                        role = headline_elem.text.strip()
+                    except:
+                        role = "Professional"
+
+                    logger.info(f"👉 Processing Lead: {name} at {company}")
+
+                    # 2. Find and Click Message Button
+                    # User provided: data-anchor-send-message
+                    msg_btn = row.find_element(By.CSS_SELECTOR, "button[data-anchor-send-message]")
+                    
+                    # Scroll to button
+                    driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", msg_btn)
+                    time.sleep(1)
+                    
+                    self.safe_click(driver, msg_btn)
+                    time.sleep(3) # Wait for chat window/drawer
+
+                    # 3. Check if we have history (Optional safety check)
+                    # If there are previous messages from 'You', maybe skip?
+                    # For now, we proceed to generate message.
+
+                    # 4. Generate AI Message
+                    message = self.generate_message(name, company, role, "", "") # Reusing existing logic
+
+                    # 5. ============ APPROVAL FLOW ============
+                    # Prepare preview data
+                    contact_info = {'Name': name, 'Company': company, 'Role': role, 'LinkedIn_profile': 'Sales Nav List'}
+                    
+                    self.active_campaigns[campaign_id]['awaiting_confirmation'] = True
+                    self.active_campaigns[campaign_id]['current_contact_preview'] = {
+                        'contact': contact_info,
+                        'message': message,
+                        'contact_index': processed_count
+                    }
+                    
+                    # Report to dashboard so UI updates
+                    self.report_progress_to_dashboard(campaign_id)
+                    logger.info(f"⏳ Waiting for approval for {name}...")
+
+                    # Wait Loop
+                    start_wait = time.time()
+                    user_decision = None
+                    while time.time() - start_wait < 300: # 5 min timeout
+                         if self.active_campaigns[campaign_id].get('stop_requested'): break
+                         user_decision = self.active_campaigns[campaign_id].get('user_action')
+                         if user_decision: break
+                         time.sleep(1)
+
+                    # Reset Wait State
+                    self.active_campaigns[campaign_id]['awaiting_confirmation'] = False
+                    self.active_campaigns[campaign_id]['current_contact_preview'] = None
+                    self.active_campaigns[campaign_id]['user_action'] = None
+
+                    action = user_decision.get('action') if user_decision else 'skip'
+
+                    if action in ['send', 'edit']:
+                        final_msg = user_decision.get('message', message) if user_decision else message
+                        
+                        # 6. Type and Send
+                        # Find the active message box in Sales Nav
+                        # Sales Nav input is often textarea[name='message'] or div[contenteditable]
+                        input_box = self.find_element_safe(driver, [
+                            ("css", "textarea[name='message']"),
+                            ("css", "div[role='textbox'][contenteditable='true']")
+                        ])
+                        
+                        if input_box:
+                            input_box.clear()
+                            self.type_like_human(input_box, final_msg)
+                            time.sleep(1)
+                            
+                            # Find Send Button
+                            send_btn = self.find_element_safe(driver, [
+                                ("css", "button[type='submit']"),
+                                ("xpath", "//button[contains(text(), 'Send')]")
+                            ])
+                            
+                            if send_btn:
+                                self.safe_click(driver, send_btn)
+                                self.active_campaigns[campaign_id]['successful'] += 1
+                                logger.info(f"✅ Message sent to {name}")
+                            else:
+                                logger.error("Send button not found")
+                        else:
+                            logger.error("Input box not found")
+                        
+                        # Close chat window to clean up
+                        try:
+                            close_icon = driver.find_element(By.CSS_SELECTOR, "button[aria-label*='Close']")
+                            close_icon.click()
+                        except: pass
+
+                    else:
+                        logger.info(f"⏭️ Skipped {name}")
+                        self.active_campaigns[campaign_id]['skipped'] += 1
+                        # Close chat if opened
+                        try:
+                            close_icon = driver.find_element(By.CSS_SELECTOR, "button[aria-label*='Close']")
+                            close_icon.click()
+                        except: pass
+                    
+                except Exception as e:
+                    logger.error(f"Error processing row {processed_count}: {e}")
+                    self.active_campaigns[campaign_id]['failed'] += 1
+
+                processed_count += 1
+                self.active_campaigns[campaign_id]['progress'] = processed_count
+                self.report_progress_to_dashboard(campaign_id)
+                time.sleep(random.uniform(3, 6))
+
+            # Final Report
+            self.report_progress_to_dashboard(campaign_id, final=True)
+
+        except Exception as e:
+            logger.error(f"Critical error in Sales Nav campaign: {e}")
+            self.active_campaigns[campaign_id]['status'] = 'failed'
+            self.report_progress_to_dashboard(campaign_id, final=True)
+        finally:
+            self.browser_lock.release()
+
+    def search_and_connect(self, driver, keywords, max_invites=20, search_id=None):
         """Search for profiles and send connection requests"""
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
@@ -1612,7 +2004,12 @@ Return ONLY the message text, no labels or formatting.
         page_loops = 0
         total_attempts = 0
         
+        # --- FIX: Main loop now checks for stop_requested flag ---
         while sent_count < max_invites and page_loops < 10:
+            if search_id and self.active_searches[search_id].get('stop_requested'):
+                logger.info("🛑 Stop requested, halting search.")
+                break
+                
             logger.info(f"📊 Current status: {sent_count}/{max_invites} invitations sent")
             
             # Find connect buttons
@@ -1628,6 +2025,10 @@ Return ONLY the message text, no labels or formatting.
                 continue
             
             for btn in connect_buttons:
+                if search_id and self.active_searches[search_id].get('stop_requested'):
+                    logger.info("🛑 Stop requested, halting connection loop.")
+                    break
+                    
                 if sent_count >= max_invites:
                     logger.info(f"🎯 Target reached: {sent_count}/{max_invites} invitations sent")
                     return sent_count
@@ -1648,6 +2049,10 @@ Return ONLY the message text, no labels or formatting.
                     logger.debug(f"Exception during connection attempt: {e}")
                     continue
             
+            # Check for stop before navigating to next page
+            if search_id and self.active_searches[search_id].get('stop_requested'):
+                break
+
             # Navigate to next page
             if not self.go_to_next_page(driver):
                 logger.info("No more pages available")
@@ -1666,11 +2071,22 @@ Return ONLY the message text, no labels or formatting.
         self.browser_lock.acquire()
         try:
             logger.info(f"🔑 Browser lock acquired for search task {search_id}")
+            
+            # --- FIX: Initialize the search state so it can be stopped ---
+            self.active_searches[search_id] = {
+                "status": "running",
+                "stop_requested": False,
+                "keywords": search_params.get('keywords', ''),
+                "max_invites": search_params.get('max_invites', 10),
+                "invites_sent": 0,
+            }
+            # --- End of Fix ---
+
             driver = self.get_shared_driver()
             if not driver:
                 raise Exception("Failed to get a valid browser session for the task.")
             
-            # Pass the validated driver to the actual logic function
+            # Pass the validated driver and search_id to the actual logic function
             self.run_enhanced_keyword_search(driver, search_id, search_params)
 
         except Exception as e:
@@ -1682,6 +2098,9 @@ Return ONLY the message text, no labels or formatting.
             })
         finally:
             logger.info(f"🔑 Browser lock released for search task {search_id}")
+            # Clean up the active search entry
+            if search_id in self.active_searches:
+                del self.active_searches[search_id]
             self.browser_lock.release()
 
     def execute_outreach_task(self, campaign_id, user_config, campaign_data):
@@ -1705,15 +2124,16 @@ Return ONLY the message text, no labels or formatting.
             logger.info(f"🔑 Browser lock released for outreach campaign {campaign_id}")
             self.browser_lock.release()
 
-    def execute_inbox_task(self, process_id):
+    def execute_inbox_task(self, process_id, platform='linkedin'):
         """
         A thread-safe wrapper to execute the inbox processing task.
         Handles locking, driver acquisition, and reporting.
         """
         self.browser_lock.acquire()
         try:
-            logger.info(f"🔑 Browser lock acquired for inbox task {process_id}")
+            logger.info(f"🔑 Browser lock acquired for {platform} inbox task {process_id}")
             driver = self.get_shared_driver()
+            
             if not driver:
                 raise Exception("Failed to get a valid browser session for inbox processing.")
 
@@ -1723,13 +2143,13 @@ Return ONLY the message text, no labels or formatting.
             
             logger.info(f"👤 Proceeding with user name: {self.user_name}")
 
-            # Execute the inbox processing
+            # Execute the inbox processing ONE time with the correct platform
             results = self.enhanced_inbox.process_inbox_enhanced(
                 driver, 
-                user_name=self.user_name, 
-                max_replies=20,  # Or get from params if available
+                user_name=self.user_name or "Me", 
                 session_id=process_id,
-                client_instance=self
+                client_instance=self,
+                platform_str=platform  # Pass the platform string correctly
             )
 
             # Report the final results
@@ -1755,24 +2175,59 @@ Return ONLY the message text, no labels or formatting.
             self.browser_lock.release()
 
     def find_connect_buttons_enhanced(self, driver):
-        """Find connect buttons with enhanced detection"""
+        """Find connect buttons with updated 2025 detection"""
         from selenium.webdriver.common.by import By
         
-        selectors = [
-            "//button[contains(text(), 'Connect') and not(contains(@class, 'artdeco-button--disabled'))]",
-            "//button[.//span[text()='Connect'] and not(contains(@class, 'disabled'))]",
-            "//button[contains(@aria-label, 'Connect') and not(@disabled)]"
-        ]
-        
         buttons = []
-        for selector in selectors:
+        
+        # Strategy 1: Find ALL buttons and filter by text content (most reliable)
+        try:
+            all_buttons = driver.find_elements(By.TAG_NAME, "button")
+            for btn in all_buttons:
+                try:
+                    btn_text = btn.text.strip()
+                    # Check if button text is exactly "Connect"
+                    if btn_text == "Connect":
+                        if btn.is_displayed() and btn.is_enabled():
+                            # Verify it's not in a "Pending" state container
+                            parent_text = ""
+                            try:
+                                parent = btn.find_element(By.XPATH, "./ancestor::*[contains(@class, 'entity-result__actions')]")
+                                parent_text = parent.text
+                            except:
+                                pass
+                            
+                            if "Pending" not in parent_text:
+                                buttons.append(btn)
+                except Exception as e:
+                    continue
+        except Exception as e:
+            logger.debug(f"Strategy 1 (all buttons) failed: {e}")
+        
+        # Strategy 2: Use aria-label selector
+        if not buttons:
             try:
-                found_buttons = driver.find_elements(By.XPATH, selector)
-                for btn in found_buttons:
+                aria_buttons = driver.find_elements(By.CSS_SELECTOR, "button[aria-label*='Invite'][aria-label*='to connect']")
+                for btn in aria_buttons:
                     if btn.is_displayed() and btn.is_enabled():
                         buttons.append(btn)
             except Exception as e:
-                logger.debug(f"Selector failed: {selector}, Error: {e}")
+                logger.debug(f"Strategy 2 (aria-label) failed: {e}")
+        
+        # Strategy 3: Look in entity-result__actions container
+        if not buttons:
+            try:
+                action_containers = driver.find_elements(By.CSS_SELECTOR, ".entity-result__actions")
+                for container in action_containers:
+                    try:
+                        connect_btns = container.find_elements(By.TAG_NAME, "button")
+                        for btn in connect_btns:
+                            if btn.text.strip() == "Connect" and btn.is_displayed():
+                                buttons.append(btn)
+                    except:
+                        continue
+            except Exception as e:
+                logger.debug(f"Strategy 3 (action containers) failed: {e}")
         
         unique_buttons = list(dict.fromkeys(buttons))
         logger.info(f"Found {len(unique_buttons)} available connect buttons")
@@ -1787,34 +2242,66 @@ Return ONLY the message text, no labels or formatting.
         return self.handle_connect_modal(driver)
 
     def handle_connect_modal(self, driver):
-        """Handle connection modal and send invitation"""
+        """Handle connection modal with updated 2025 selectors"""
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.common.exceptions import TimeoutException
+        
         self.human_delay(1, 2)
-        # Click send button
-        for xpath in [
-            "//button[normalize-space()='Send without a note']",
-            "//button[normalize-space()='Send now']",
-            "//button[contains(@aria-label,'Send')]"
-        ]:
+        
+        # Try to find and click "Send without a note" or "Send now" button
+        send_selectors = [
+            # Updated 2025 selectors
+            "button[aria-label='Send without a note']",
+            "button[aria-label='Send now']",
+            "button[aria-label='Send invitation']",
+        ]
+        
+        for selector in send_selectors:
             try:
                 btn = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, xpath))
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                 )
                 btn.click()
+                logger.info(f"Clicked send button with selector: {selector}")
                 break
             except TimeoutException:
                 continue
+        else:
+            # Fallback: Find by button text
+            try:
+                all_buttons = driver.find_elements(By.TAG_NAME, "button")
+                for btn in all_buttons:
+                    btn_text = btn.text.strip()
+                    if btn_text in ["Send without a note", "Send now", "Send"]:
+                        if btn.is_displayed() and btn.is_enabled():
+                            btn.click()
+                            logger.info(f"Clicked send button with text: {btn_text}")
+                            break
+            except Exception as e:
+                logger.warning(f"Fallback button click failed: {e}")
         
-        # Wait for success confirmation
+        self.human_delay(1, 2)
+        
+        # Check for success - look for "Pending" state
         try:
             WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.XPATH, "//button[normalize-space()='Pending']"))
+                EC.any_of(
+                    EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'Pending')]")),
+                    EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Pending')]")),
+                    # Modal closed successfully indicator
+                    EC.invisibility_of_element_located((By.CSS_SELECTOR, ".artdeco-modal"))
+                )
             )
             return True
         except TimeoutException:
+            # Try to close modal if still open
+            try:
+                close_btn = driver.find_element(By.CSS_SELECTOR, "button[aria-label='Dismiss']")
+                close_btn.click()
+            except:
+                pass
             return False
 
     def go_to_next_page(self, driver):
@@ -2197,25 +2684,42 @@ Return ONLY the message text, no labels or formatting.
 
             logger.info(f"🔍 Starting keyword search for: '{keywords}' with driver {driver.session_id}")
 
-            # Call the search_and_connect method on self, passing the shared driver
-            sent_count = self.search_and_connect(driver, keywords, max_invites=max_invites)
+            # --- FIX: Pass the search_id to search_and_connect ---
+            sent_count = self.search_and_connect(driver, keywords, max_invites=max_invites, search_id=search_id)
 
             logger.info(f"✅ Keyword search completed. Invitations sent: {sent_count}/{max_invites}")
-
-            # Report successful results back to the dashboard
-            payload = {
-                'keywords': keywords,
-                'max_invites': max_invites,
-                'invites_sent': sent_count,
-                'timestamp': datetime.now().isoformat()
-            }
-            self.report_task_result({
-                'task_id': search_id,
-                'type': 'keyword_search',
-                'success': True,
-                'payload': payload,
-                'error': None
-            })
+            
+            # Check if it was stopped
+            if self.active_searches.get(search_id, {}).get('stop_requested'):
+                 logger.info(f"Search task {search_id} was stopped by user. Final count: {sent_count}")
+                 # Report as 'stopped' (which is a form of success)
+                 payload = {
+                    'keywords': keywords,
+                    'max_invites': max_invites,
+                    'invites_sent': sent_count,
+                    'status': 'stopped',
+                    'timestamp': datetime.now().isoformat()
+                }
+                 self.report_task_result({
+                    'task_id': search_id, 'type': 'keyword_search',
+                    'success': True, 'payload': payload, 'error': 'Stopped by user.'
+                })
+            else:
+                # Report successful completion
+                payload = {
+                    'keywords': keywords,
+                    'max_invites': max_invites,
+                    'invites_sent': sent_count,
+                    'status': 'completed',
+                    'timestamp': datetime.now().isoformat()
+                }
+                self.report_task_result({
+                    'task_id': search_id,
+                    'type': 'keyword_search',
+                    'success': True,
+                    'payload': payload,
+                    'error': None
+                })
 
         except Exception as e:
             logger.error(f"❌ Keyword search logic for {search_id} failed: {e}", exc_info=True)
@@ -2382,56 +2886,7 @@ Return ONLY the message text, no labels or formatting.
                 "error": str(e),
                 "process_id": process_id
             })
-    def run_sales_navigator_collection(self, collection_id, user_config, collection_params):
-        """Runs the profile collection from a Sales Navigator URL."""
-        try:
-            sales_nav_url = collection_params.get('sales_nav_url', '')
-            max_profiles = int(collection_params.get('max_profiles', 25))
-
-            self.active_collections[collection_id] = {
-                'status': 'initializing',
-                'progress': 0,
-                'total': max_profiles,
-                'url': sales_nav_url,
-                'start_time': datetime.now().isoformat(),
-            }
-
-            automation = LinkedInAutomation(
-                email=user_config.get('linkedin_email', self.config['linkedin_email']),
-                password=user_config.get('linkedin_password', self.config['linkedin_password'])
-            )
-
-            self.active_collections[collection_id]['status'] = 'logging_in'
-            if not automation.login():
-                raise Exception("LinkedIn login failed")
-
-            self.active_collections[collection_id]['status'] = 'running'
             
-            # Perform the scraping
-            collected_profiles = self.scrape_sales_navigator_search(automation.driver, sales_nav_url, max_profiles)
-            
-            # Final report
-            final_results = {
-                'status': 'completed',
-                'progress': len(collected_profiles),
-                'profiles': collected_profiles,
-                'end_time': datetime.now().isoformat()
-            }
-            self.report_collection_results_to_dashboard(collection_id, final_results, final=True)
-            logger.info(f"✅ Collection {collection_id} complete. Found {len(collected_profiles)} profiles.")
-
-        except Exception as e:
-            logger.error(f"❌ Collection campaign {collection_id} failed: {e}")
-            error_report = {
-                'status': 'failed',
-                'error': str(e),
-                'end_time': datetime.now().isoformat()
-            }
-            self.report_collection_results_to_dashboard(collection_id, error_report, final=True)
-        finally:
-            if 'automation' in locals():
-                automation.close()
-
     def extract_conversation_details(self, driver) -> Dict[str, Any]:
         """Extract detailed conversation information including participant info"""
         from selenium.webdriver.common.by import By
@@ -2572,6 +3027,63 @@ Return ONLY the message text, no labels or formatting.
             logger.error(f"Error getting conversation history: {e}")
         
         return conversation
+    
+    def process_non_responders(self, campaign_id):
+        """
+        Checks for contacts who were messaged >3 days ago and haven't replied.
+        Extracts email and sends follow-up via Gmail.
+        """
+        import json
+        from datetime import datetime, timedelta
+
+        # 1. Load Campaign Data
+        # (Assuming you are tracking campaign state locally or pulling from server)
+        # For this example, we'll assume self.active_campaigns holds the state
+        campaign = self.active_campaigns.get(campaign_id)
+        if not campaign:
+            logger.error("Campaign not found")
+            return
+
+        driver = self.get_shared_driver()
+        
+        for contact in campaign.get('contacts_processed', []):
+            # Check criteria: Sent message, No Reply, Time elapsed
+            last_msg_time = datetime.fromisoformat(contact.get('last_message_time'))
+            days_elapsed = (datetime.now() - last_msg_time).days
+            
+            has_replied = contact.get('has_replied', False) # You need to update this flag from Inbox scanner
+            already_emailed = contact.get('emailed', False)
+
+            if not has_replied and not already_emailed and days_elapsed >= 3:
+                logger.info(f"📉 No reply from {contact['Name']} after {days_elapsed} days. Attempting email fallback.")
+                
+                # 1. Extract Email
+                email = self.extract_email_from_profile(driver, contact['LinkedIn_profile'])
+                
+                if email:
+                    # 2. Prepare Email Content
+                    subject = f"Following up - {contact['Company']}"
+                    body = f"Hi {contact['Name'].split()[0]},\n\nI sent you a note on LinkedIn a few days ago regarding {contact['Company']}..."
+                    
+                    # 3. Send via Gmail (Server API)
+                    details = {
+                        "to_email": email,
+                        "subject": subject,
+                        "body": body
+                    }
+                    
+                    result = self.send_email(details)
+                    
+                    if result.get('success'):
+                        logger.info(f"✅ Cold email sent to {email}")
+                        contact['emailed'] = True
+                        contact['email_sent_time'] = datetime.now().isoformat()
+                        # Update database/server state here
+                    else:
+                        logger.error(f"❌ Failed to send email: {result.get('error')}")
+                else:
+                    logger.warning(f"Could not find email for {contact['Name']}")
+
     def send_chat_message(self, driver, message):
         """Types and sends a message in the currently active chat window"""
         from selenium.webdriver.common.by import By
@@ -2725,7 +3237,139 @@ Return ONLY the message text, no labels or formatting.
 
         except Exception as e:
             logger.debug(f"Could not report search results for {search_id}: {e}")
+
+
+
+    def get_calendar_slots(self, duration_minutes: int = 30, days_ahead: int = 7) -> List[str]:
+        """Fetch available calendar slots from the server."""
+        try:
+            SERVER_BASE = self.config.get('dashboard_url')
+            if not SERVER_BASE:
+                logger.warning("No dashboard URL, cannot fetch calendar slots.")
+                return []
+                
+            endpoint = f"{SERVER_BASE.rstrip('/')}/api/google/free-slots"
+            params = {'duration_minutes': duration_minutes, 'days_ahead': days_ahead}
             
+            resp = requests.get(
+                endpoint, 
+                headers=self._get_auth_headers(), 
+                params=params, 
+                timeout=20
+            )
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.info(f"Successfully fetched {len(data.get('slots', []))} free slots.")
+                return data.get('slots', [])
+            else:
+                logger.error(f"Error fetching calendar slots: {resp.status_code} - {resp.text}")
+                return []
+        except Exception as e:
+            logger.error(f"Exception fetching calendar slots: {e}")
+            return []
+
+    def book_calendar_event(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Request the server to book a calendar event."""
+        try:
+            SERVER_BASE = self.config.get('dashboard_url')
+            if not SERVER_BASE:
+                return {'success': False, 'error': 'No dashboard URL configured'}
+                
+            endpoint = f"{SERVER_BASE.rstrip('/')}/api/google/book-meeting"
+            
+            resp = requests.post(
+                endpoint, 
+                headers=self._get_auth_headers(), 
+                json=details, 
+                timeout=30
+            )
+            
+            if resp.status_code == 200:
+                logger.info("Successfully booked meeting.")
+                return resp.json()
+            else:
+                logger.error(f"Error booking meeting: {resp.status_code} - {resp.text}")
+                return {'success': False, 'error': resp.text}
+        except Exception as e:
+            logger.error(f"Exception booking meeting: {e}")
+            return {'success': False, 'error': str(e)}
+    
+
+    def extract_email_from_profile(self, driver, profile_url):
+        """
+        Navigates to profile, clicks Contact Info, and scrapes email.
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        import re
+
+        email = None
+        try:
+            if driver.current_url != profile_url:
+                driver.get(profile_url)
+                time.sleep(3)
+
+            # Click "Contact info" link
+            try:
+                contact_info_btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.ID, "top-card-text-details-contact-info"))
+                )
+                contact_info_btn.click()
+                time.sleep(2)
+            except Exception:
+                logger.warning("Could not find or click Contact Info button")
+                return None
+
+            # Scrape Email from the modal
+            try:
+                # Look for the email section in the modal
+                email_section = driver.find_element(By.CSS_SELECTOR, ".pv-contact-info__contact-type--email")
+                email_link = email_section.find_element(By.TAG_NAME, "a")
+                email = email_link.text.strip()
+                logger.info(f"📧 Extracted email: {email}")
+            except Exception:
+                logger.info("No email listed in Contact Info")
+
+            # Close modal
+            try:
+                close_btn = driver.find_element(By.CSS_SELECTOR, "button[aria-label='Dismiss']")
+                close_btn.click()
+            except:
+                driver.find_element(By.TAG_NAME, "body").click()
+
+        except Exception as e:
+            logger.error(f"Error extracting email: {e}")
+
+        return email
+
+    def send_email(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Request the server to send an email."""
+        try:
+            SERVER_BASE = self.config.get('dashboard_url')
+            if not SERVER_BASE:
+                return {'success': False, 'error': 'No dashboard URL configured'}
+                
+            endpoint = f"{SERVER_BASE.rstrip('/')}/api/google/send-email"
+            
+            resp = requests.post(
+                endpoint, 
+                headers=self._get_auth_headers(), 
+                json=details, 
+                timeout=30
+            )
+            
+            if resp.status_code == 200:
+                logger.info("Successfully sent email.")
+                return resp.json()
+            else:
+                logger.error(f"Error sending email: {resp.status_code} - {resp.text}")
+                return {'success': False, 'error': resp.text}
+        except Exception as e:
+            logger.error(f"Exception sending email: {e}")
+            return {'success': False, 'error': str(e)}
+                
     def show_profile_info(self):
         """Show information about the persistent profile"""
         if hasattr(self, 'persistent_profile_dir'):
@@ -2741,6 +3385,65 @@ Return ONLY the message text, no labels or formatting.
                 logger.info("🔄 This profile will be reused for future sessions")
             except Exception as e:
                 logger.debug(f"Could not calculate profile size: {e}")
+
+    
+    def add_contact_to_hubspot(self, contact):
+        """
+        Adds a contact to HubSpot CRM when a positive reply is detected.
+        Requires 'hubspot_api_key' in client_config.json.
+        """
+        api_key = self.config.get('hubspot_api_key')
+        if not api_key:
+            logger.warning("⚠️ HubSpot API key not found in config. Skipping sync.")
+            return False
+
+        endpoint = "https://api.hubapi.com/crm/v3/objects/contacts"
+        
+        # Split name into First/Last
+        names = contact.name.split(' ')
+        first_name = names[0]
+        last_name = ' '.join(names[1:]) if len(names) > 1 else ''
+
+        # Extract email if available in profile_data
+        email = contact.profile_data.get('email', '')
+        
+        # Prepare payload
+        properties = {
+            "firstname": first_name,
+            "lastname": last_name,
+            "company": contact.company,
+            "jobtitle": contact.title,
+            "linkedinbio": contact.linkedin_url, # Standard HubSpot property for LinkedIn
+            "lifecyclestage": "lead",            # Mark as Lead
+            "lead_status": "New"
+        }
+        
+        # Only add email if we actually found one (avoids validation errors)
+        if email:
+            properties["email"] = email
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            logger.info(f"🚀 Syncing {contact.name} to HubSpot...")
+            response = requests.post(endpoint, json={"properties": properties}, headers=headers, timeout=10)
+            
+            if response.status_code in [200, 201]:
+                logger.info(f"✅ Successfully added {contact.name} to HubSpot as a Lead.")
+                return True
+            elif response.status_code == 409:
+                logger.info(f"⚠️ Contact {contact.name} already exists in HubSpot. (Duplicate)")
+                return True
+            else:
+                logger.error(f"❌ HubSpot Sync Failed: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error syncing to HubSpot: {e}")
+            return False
                 
     def _run_flask_app(self):
         """Run Flask app"""

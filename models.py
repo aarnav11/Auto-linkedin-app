@@ -29,6 +29,8 @@ class MessageIntent(Enum):
     OUT_OF_OFFICE = "out_of_office"
     NOT_INTERESTED = "not_interested"
     SPAM = "spam"
+    MEETING_CONFIRMATION = "meeting_confirmation"
+    PROVIDE_EMAIL = "provide_email"
 
 @dataclass
 class ConversationMetrics:

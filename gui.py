@@ -19,7 +19,7 @@ def create_config_gui(self):
     root.resizable(False, False)
         
         # Center the window
-    root.geometry('600x500+300+200')
+    root.geometry('600x600') # Increased height slightly to fit new fields
 
     frm = ttk.Frame(root, padding=12)
     frm.pack(fill='both', expand=True)
@@ -53,6 +53,20 @@ def create_config_gui(self):
     ttk.Entry(frm, textvariable=gemini_api_key, width=40).grid(row=row, column=1, sticky='w')
     row += 1
 
+    # ---------------------------------------------------------
+    # NEW: HubSpot Configuration
+    # ---------------------------------------------------------
+    ttk.Label(frm, text='').grid(row=row, column=0)
+    row += 1
+    ttk.Label(frm, text='Integrations:', 
+            font=('Helvetica', 12, 'bold')).grid(row=row, column=0, columnspan=2, sticky='w')
+    row += 1
+    ttk.Label(frm, text='HubSpot API Key:').grid(row=row, column=0, sticky='e', padx=(0,5))
+    hubspot_api_key = tk.StringVar()
+    ttk.Entry(frm, textvariable=hubspot_api_key, width=40).grid(row=row, column=1, sticky='w')
+    row += 1
+    # ---------------------------------------------------------
+
     # Client Settings
     ttk.Label(frm, text='').grid(row=row, column=0)
     row += 1
@@ -63,6 +77,7 @@ def create_config_gui(self):
     local_port = tk.StringVar(value='5001')
     ttk.Entry(frm, textvariable=local_port, width=10).grid(row=row, column=1, sticky='w')
     row += 1
+    
     # Dashboard connection
     ttk.Label(frm, text='').grid(row=row, column=0)
     row += 1
@@ -70,30 +85,42 @@ def create_config_gui(self):
             font=('Helvetica', 12, 'bold')).grid(row=row, column=0, columnspan=2, sticky='w')
     row += 1
 
-    default_dashboard = 'https://linkedin-automation-dashboard.onrender.com'
-    use_online = tk.BooleanVar(value=True)
-
+    URL_RENDER = 'https://linkedin-automation-dashboard.onrender.com'
+    URL_EB_AWS = 'http://linksprig-dev.ap-south-1.elasticbeanstalk.com/'
+    URL_LOCAL = 'http://127.0.0.1:5000'
+    default_dashboard = URL_RENDER
+    dashboard_choice = tk.StringVar(value="render")
     def update_dashboard_url():
-            if use_online.get():
-                dashboard_url.set('https://linkedin-automation-dashboard.onrender.com')
+            choice = dashboard_choice.get()
+            if choice == "render":
+                dashboard_url.set(URL_RENDER)
+            elif choice == "AWS":
+                dashboard_url.set(URL_EB_AWS)
             else:
-                dashboard_url.set('http://127.0.0.1:5000')
-        
+                dashboard_url.set(URL_LOCAL)
+
     ttk.Radiobutton(frm, text='Online Dashboard (Render)', 
-                       variable=use_online, value=True, 
+                       variable=dashboard_choice, value="render", 
                        command=update_dashboard_url).grid(row=row, column=0, sticky='w')
-    ttk.Radiobutton(frm, text='Local Dashboard', 
-                       variable=use_online, value=False,
+    ttk.Radiobutton(frm, text='Local Dashboard (127.0.0.1)', 
+                       variable=dashboard_choice, value="local",
                        command=update_dashboard_url).grid(row=row, column=1, sticky='w')
+    row += 1
+    ttk.Radiobutton(frm, text='Dev Dashboard (Elastic Beanstalk)', 
+                       variable=dashboard_choice, value="eb_AWS",
+                       command=update_dashboard_url).grid(row=row, column=0, columnspan=2, sticky='w')
     row += 1
     ttk.Label(frm, text='Dashboard URL:').grid(row=row, column=0, sticky='e', padx=(0,5))
     dashboard_url = tk.StringVar(value=default_dashboard)
     ttk.Entry(frm, textvariable=dashboard_url, width=50).grid(row=row, column=1, sticky='w')
     row += 1
-    ttk.Label(frm, text='(Use https://linkedin-automation-dashboard.onrender.com for online)', 
+    ttk.Label(frm, text=f'(Render: {URL_RENDER})', 
                  font=('Helvetica', 8)).grid(row=row, column=0, columnspan=2, sticky='w')
     row += 1
-    ttk.Label(frm, text='(Use http://127.0.0.1:5000 for local development)', 
+    ttk.Label(frm, text=f'(AWS: {URL_EB_AWS})', 
+                 font=('Helvetica', 8)).grid(row=row, column=0, columnspan=2, sticky='w')
+    row += 1
+    ttk.Label(frm, text=f'(Local: {URL_LOCAL})', 
                  font=('Helvetica', 8)).grid(row=row, column=0, columnspan=2, sticky='w')
     row += 1
 
@@ -142,19 +169,22 @@ def create_config_gui(self):
                 'linkedin_email': req['linkedin_email'],
                 'linkedin_password': req['linkedin_password'],
                 'gemini_api_key': req['gemini_api_key'],
+                # NEW: Save HubSpot Key to config
+                'hubspot_api_key': hubspot_api_key.get().strip(),
                 'local_port': lp,
                 'dashboard_url': dash,
-                'use_online_dashboard': use_online.get(),
+                'use_online_dashboard': dashboard_choice.get(),
                 'created_at': __import__('datetime').datetime.now().isoformat()
             }
 
             # Test connection
             try:
                 import requests
-                resp = requests.get(f"{dash}/", timeout=15)
+                test_url = dash if dash.endswith('/') else f"{dash}/"
+                resp = requests.get(test_url, timeout=15)
                 if resp.status_code != 200:
                     cont = messagebox.askyesno('Connection Test Failed', 
-                                             f'Dashboard connection test returned status {resp.status_code}.Do you want to continue anyway?')
+                                         f'Dashboard connection test to {test_url} returned status {resp.status_code}.\n\nDo you want to continue anyway?')
                     if not cont:
                         return
             except requests.exceptions.Timeout:
@@ -169,7 +199,7 @@ def create_config_gui(self):
                     return
             except Exception as e:
                 cont = messagebox.askyesno('Connection Test Error', 
-                                         f'Connection test failed: {e}Do you want to continue anyway?')
+                                         f'Connection test failed: {e}\n\nDo you want to continue anyway?')
                 if not cont:
                     return
 
@@ -183,13 +213,10 @@ def create_config_gui(self):
             except Exception as e:
                 messagebox.showerror('Save Error', f'Error saving configuration: {e}')
 
-            ttk.Button(btn_frame, text='Save & Start', command=on_save).grid(row=0, column=0, padx=6)
-            ttk.Button(btn_frame, text='Cancel', command=on_cancel).grid(row=0, column=1, padx=6)
-
+    ttk.Button(btn_frame, text='Save & Start', command=on_save).grid(row=0, column=0, padx=6)
+    ttk.Button(btn_frame, text='Cancel', command=on_cancel).grid(row=0, column=1, padx=6)
         # Start mainloop
-            root.mainloop()
-        
-    # At the very end of the function, after root.mainloop(), add this:
+    root.mainloop()
     return _tk_config_result
 
 

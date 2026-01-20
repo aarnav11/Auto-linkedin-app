@@ -1,9 +1,9 @@
 {
-  "content_b84bc1cea4bc7fb4d7ff4925d7ef2599": {
-    "conversation_id": "content_b84bc1cea4bc7fb4d7ff4925d7ef2599",
+  "content_760240c3995bf81e5d45283015bc6100": {
+    "conversation_id": "content_760240c3995bf81e5d45283015bc6100",
     "contact": {
-      "name": "Shelindhra Das",
-      "linkedin_url": "https://www.linkedin.com/in/ACoAADHl8p0B-Ya-ejNxse_6VYBh4QA9hYh4E-Y",
+      "name": "Naveen Shukla",
+      "linkedin_url": "https://www.linkedin.com/in/ACoAAABGGbEBVDSMhRoLMBxcWk1grzMVN-JO3Q4",
       "company": "",
       "title": "",
       "location": "",
@@ -16,24 +16,24 @@
     },
     "conversation_history": [
       {
-        "sender": "Shelindhra Das\nStatus is reachable\nAvailable on mobile",
-        "message": "Great",
+        "sender": "Naveen Shukla\nStatus is online\nActive now",
+        "message": "Hi can we reschedule the meeting",
         "timestamp": ""
       }
     ],
     "metrics": {
-      "lead_score": 45,
+      "lead_score": 55,
       "engagement_score": 0,
       "response_time_avg": 0.0,
       "message_count": 1,
-      "last_interaction": "2025-10-15T20:00:34.780126",
+      "last_interaction": "2025-11-21T14:40:17.102698",
       "stage": "initial_response",
-      "intent": "positive_response",
+      "intent": "schedule_meeting",
       "priority": "medium",
       "tags": []
     },
-    "last_updated": "2025-10-15T20:00:34.780470",
-    "created_at": "2025-10-14T17:50:02.092655"
+    "last_updated": "2025-11-21T14:40:17.108005",
+    "created_at": "2025-11-12T15:39:41.019935"
   },
   "content_8efc38bbce0d8ac73413dd258841631d": {
     "conversation_id": "content_8efc38bbce0d8ac73413dd258841631d",
@@ -52,34 +52,29 @@
     },
     "conversation_history": [
       {
-        "sender": "Amita singh\nStatus is reachable\nAvailable on mobile",
-        "message": "Hi Amita, great to hear from you! Many businesses are indeed focusing on adapting to new privacy regulations and leveraging AI for competitive SEO gains. I'd be happy to share some specific strategies we've seen work – would you be open to a quick 15-minute chat to discuss what's most pressing fo...",
+        "sender": "Amita singh\nStatus is reachable\nMobile\n•\n1d ago",
+        "message": "ok can you schedule a call for tommorow 12 pm and send calendar invite?",
         "timestamp": ""
       },
       {
-        "sender": "Amita singh\nStatus is reachable\nAvailable on mobile",
-        "message": "Hello",
-        "timestamp": ""
-      },
-      {
-        "sender": "Amita singh\nStatus is reachable\nAvailable on mobile",
-        "message": "Yes",
+        "sender": "Amita singh\nStatus is reachable\nMobile\n•\n1d ago",
+        "message": "My apologies, I ran into an error trying to book that time. Could you please try confirming the time again?",
         "timestamp": ""
       }
     ],
     "metrics": {
-      "lead_score": 75,
+      "lead_score": 80,
       "engagement_score": 0,
       "response_time_avg": 0.0,
-      "message_count": 3,
-      "last_interaction": "2025-10-31T14:10:42.496361",
+      "message_count": 2,
+      "last_interaction": "2025-11-21T14:41:08.156314",
       "stage": "initial_response",
-      "intent": "positive_response",
+      "intent": "meeting_confirmation",
       "priority": "medium",
       "tags": []
     },
-    "last_updated": "2025-10-31T14:10:42.498357",
-    "created_at": "2025-10-15T14:47:57.177666"
+    "last_updated": "2025-11-21T14:41:08.161659",
+    "created_at": "2025-11-12T15:44:49.860083"
   },
   "content_d309efc46eb647f7141a7c54bffbdafa": {
     "conversation_id": "content_d309efc46eb647f7141a7c54bffbdafa",
@@ -98,7 +93,7 @@
     },
     "conversation_history": [
       {
-        "sender": "Sourabh Kesharwani\nStatus is reachable\nAvailable on mobile",
+        "sender": "Sourabh Kesharwani\nStatus is reachable\nMobile\n•\n20h ago",
         "message": "Hi Sourabh, great to hear you're open to connecting! To ensure our chat is valuable for you, could you briefly share what's currently on your mind regarding SEO/PPC, or any specific challenges you're looking to address? Knowing this helps me tailor our discussion.",
         "timestamp": ""
       }
@@ -108,14 +103,14 @@
       "engagement_score": 0,
       "response_time_avg": 0.0,
       "message_count": 1,
-      "last_interaction": "2025-10-30T16:14:53.463749",
+      "last_interaction": "2025-11-21T14:43:07.608800",
       "stage": "initial_response",
-      "intent": "positive_response",
+      "intent": "question",
       "priority": "medium",
       "tags": []
     },
-    "last_updated": "2025-10-30T16:14:53.464289",
-    "created_at": "2025-10-15T18:12:32.318808"
+    "last_updated": "2025-11-21T14:43:07.613312",
+    "created_at": "2025-11-21T14:43:07.613333"
   },
   "content_34d2321db2e274c9a189219216c1b147": {
     "conversation_id": "content_34d2321db2e274c9a189219216c1b147",
@@ -134,34 +129,60 @@
     },
     "conversation_history": [
       {
-        "sender": "Sucheta Kulkarni\nStatus is reachable\nAvailable on mobile",
-        "message": "Hi Sucheta, thanks again for your patience! I've now had a chance to review, and I'm confident we could make a significant impact. Would you be open to a quick 15-minute chat next week to see a brief demo of how it works?",
-        "timestamp": ""
-      },
-      {
-        "sender": "Sucheta Kulkarni\nStatus is reachable\nAvailable on mobile",
-        "message": "Thanks for letting me know, Sucheta. I completely understand if now isn't the ideal time for a demo. Should you ever be exploring ways to achieve a significant impact, please feel free to reach out, or I'd be happy to check in again down the line.",
-        "timestamp": ""
-      },
-      {
-        "sender": "Sucheta Kulkarni\nStatus is reachable\nAvailable on mobile",
+        "sender": "Sucheta Kulkarni\nStatus is reachable\nMobile\n•\n1d ago",
         "message": "Thanks again, Sucheta. I completely understand if now isn't the ideal time for exploring new options. I'll respect your focus and will keep the door open for a future conversation should your needs evolve.",
         "timestamp": ""
       }
     ],
     "metrics": {
-      "lead_score": 85,
+      "lead_score": 55,
       "engagement_score": 0,
       "response_time_avg": 0.0,
-      "message_count": 3,
-      "last_interaction": "2025-10-16T12:26:00.782017",
+      "message_count": 1,
+      "last_interaction": "2025-11-21T14:55:34.571015",
       "stage": "initial_response",
       "intent": "negative_response",
       "priority": "medium",
       "tags": []
     },
-    "last_updated": "2025-10-16T12:26:00.784119",
-    "created_at": "2025-10-15T18:18:00.913702"
+    "last_updated": "2025-11-21T14:55:34.575858",
+    "created_at": "2025-11-21T14:55:34.575876"
+  },
+  "content_6be1b22241ae57a8e35bd7c35595167c": {
+    "conversation_id": "content_6be1b22241ae57a8e35bd7c35595167c",
+    "contact": {
+      "name": "Fateh Education",
+      "linkedin_url": "",
+      "company": "",
+      "title": "",
+      "location": "",
+      "industry": "",
+      "connections": "",
+      "profile_data": {},
+      "conversation_id": "",
+      "first_message_date": "",
+      "last_message_date": ""
+    },
+    "conversation_history": [
+      {
+        "sender": "Fateh Education",
+        "message": "Hi arnav\n\nDo you have the dream of studying in the UK/Ireland, but wondering where to start?\n\nWe are here to help you conquer your dream. Study Masters in Law, Economics, Data Science, Management, Engineering, etc., from the Top universities in the UK/Ireland. \n\nFateh has partnerships with 120+ prestigious universities in the UK. 40000+ students have already conquered their dream and you could be the next. \n\nWe will assist you with course/university selection, and admission to visa processing. Click the link below to learn more.",
+        "timestamp": ""
+      }
+    ],
+    "metrics": {
+      "lead_score": 70,
+      "engagement_score": 0,
+      "response_time_avg": 0.0,
+      "message_count": 1,
+      "last_interaction": "2025-11-21T15:23:26.144347",
+      "stage": "initial_response",
+      "intent": "spam",
+      "priority": "medium",
+      "tags": []
+    },
+    "last_updated": "2025-11-21T15:23:26.146241",
+    "created_at": "2025-11-21T15:23:26.146250"
   },
   "content_403ee654e1ec9e300e3c0ca06eb565f5": {
     "conversation_id": "content_403ee654e1ec9e300e3c0ca06eb565f5",
@@ -195,14 +216,50 @@
       "engagement_score": 0,
       "response_time_avg": 0.0,
       "message_count": 2,
-      "last_interaction": "2025-10-16T12:26:05.631879",
+      "last_interaction": "2025-11-21T15:23:37.209924",
       "stage": "initial_response",
       "intent": "question",
       "priority": "medium",
       "tags": []
     },
-    "last_updated": "2025-10-16T12:26:05.632381",
-    "created_at": "2025-10-15T18:18:13.671562"
+    "last_updated": "2025-11-21T15:23:37.211959",
+    "created_at": "2025-11-21T15:23:37.211965"
+  },
+  "content_b84bc1cea4bc7fb4d7ff4925d7ef2599": {
+    "conversation_id": "content_b84bc1cea4bc7fb4d7ff4925d7ef2599",
+    "contact": {
+      "name": "Shelindhra Das",
+      "linkedin_url": "https://www.linkedin.com/in/ACoAADHl8p0B-Ya-ejNxse_6VYBh4QA9hYh4E-Y",
+      "company": "",
+      "title": "",
+      "location": "",
+      "industry": "",
+      "connections": "",
+      "profile_data": {},
+      "conversation_id": "",
+      "first_message_date": "",
+      "last_message_date": ""
+    },
+    "conversation_history": [
+      {
+        "sender": "Shelindhra Das\nStatus is reachable\nMobile\n•\n1d ago",
+        "message": "Great",
+        "timestamp": ""
+      }
+    ],
+    "metrics": {
+      "lead_score": 45,
+      "engagement_score": 0,
+      "response_time_avg": 0.0,
+      "message_count": 1,
+      "last_interaction": "2025-11-21T15:24:15.210275",
+      "stage": "initial_response",
+      "intent": "positive_response",
+      "priority": "medium",
+      "tags": []
+    },
+    "last_updated": "2025-11-21T15:24:15.213472",
+    "created_at": "2025-11-21T15:24:15.213478"
   },
   "content_7f7b243957de2d4cb9f5ad0fae26964a": {
     "conversation_id": "content_7f7b243957de2d4cb9f5ad0fae26964a",
@@ -221,17 +278,17 @@
     },
     "conversation_history": [
       {
-        "sender": "Aditya Shendage\nStatus is reachable\nAvailable on mobile",
+        "sender": "Aditya Shendage\nStatus is reachable\nMobile\n•\n3d ago",
         "message": "Thanks",
         "timestamp": ""
       },
       {
-        "sender": "Aditya Shendage\nStatus is reachable\nAvailable on mobile",
+        "sender": "Aditya Shendage\nStatus is reachable\nMobile\n•\n3d ago",
         "message": "Yes would love to stay in touch with you.",
         "timestamp": ""
       },
       {
-        "sender": "Aditya Shendage\nStatus is reachable\nAvailable on mobile",
+        "sender": "Aditya Shendage\nStatus is reachable\nMobile\n•\n3d ago",
         "message": "Thanks for connectiong",
         "timestamp": ""
       }
@@ -241,20 +298,20 @@
       "engagement_score": 0,
       "response_time_avg": 0.0,
       "message_count": 3,
-      "last_interaction": "2025-10-15T20:18:45.776132",
+      "last_interaction": "2025-11-21T15:24:50.222645",
       "stage": "initial_response",
       "intent": "positive_response",
       "priority": "medium",
       "tags": []
     },
-    "last_updated": "2025-10-15T20:18:45.777068",
-    "created_at": "2025-10-15T20:06:05.962279"
+    "last_updated": "2025-11-21T15:24:50.226234",
+    "created_at": "2025-11-21T15:24:50.226248"
   },
-  "content_760240c3995bf81e5d45283015bc6100": {
-    "conversation_id": "content_760240c3995bf81e5d45283015bc6100",
+  "content_8bcfd3726e6491eb1b60ce2c0f045544": {
+    "conversation_id": "content_8bcfd3726e6491eb1b60ce2c0f045544",
     "contact": {
-      "name": "Naveen Shukla",
-      "linkedin_url": "https://www.linkedin.com/in/ACoAAABGGbEBVDSMhRoLMBxcWk1grzMVN-JO3Q4",
+      "name": "Ar.Nakshatra Hasare",
+      "linkedin_url": "https://www.linkedin.com/in/ACoAAEXKup4BxSNMrn0xmMo5Ed7QuCpNoIjYwy0",
       "company": "",
       "title": "",
       "location": "",
@@ -267,33 +324,59 @@
     },
     "conversation_history": [
       {
-        "sender": "Naveen Shukla\nStatus is online\nActive now",
-        "message": "Hello Arnav, I am looking for your services",
-        "timestamp": ""
-      },
-      {
-        "sender": "Naveen Shukla\nStatus is online\nActive now",
-        "message": "Hello Naveen, thanks for reaching out! I'd be happy to discuss how we can assist. To ensure I provide the most relevant information, could you share a bit more about what specific services you have in mind?",
-        "timestamp": ""
-      },
-      {
-        "sender": "Naveen Shukla\nStatus is online\nActive now",
-        "message": "can you send your brochure or some literatre around digital marketing services",
+        "sender": "Ar.Nakshatra Hasare\nStatus is reachable\nMobile\n•\n15h ago",
+        "message": "Nakshatra, your role at Espial Solutions caught my eye.  My expertise in PPC aligns well with your SEO skills.  Let's connect!",
         "timestamp": ""
       }
     ],
     "metrics": {
-      "lead_score": 80,
+      "lead_score": 55,
       "engagement_score": 0,
       "response_time_avg": 0.0,
-      "message_count": 3,
-      "last_interaction": "2025-10-31T14:08:23.983927",
+      "message_count": 1,
+      "last_interaction": "2025-11-21T15:26:13.952894",
       "stage": "initial_response",
-      "intent": "question",
+      "intent": "request_info",
       "priority": "medium",
       "tags": []
     },
-    "last_updated": "2025-10-31T14:08:23.984590",
-    "created_at": "2025-10-30T16:12:44.580066"
+    "last_updated": "2025-11-21T15:26:13.954516",
+    "created_at": "2025-11-21T15:26:13.954531"
+  },
+  "content_7592ab2f65e6994039edcb0ae8f08e98": {
+    "conversation_id": "content_7592ab2f65e6994039edcb0ae8f08e98",
+    "contact": {
+      "name": "jegan Tamil",
+      "linkedin_url": "https://www.linkedin.com/in/ACoAAAazuSsBnwvKnixhZ4zRsr95tMyZP_lcWrA",
+      "company": "",
+      "title": "",
+      "location": "",
+      "industry": "",
+      "connections": "",
+      "profile_data": {},
+      "conversation_id": "",
+      "first_message_date": "",
+      "last_message_date": ""
+    },
+    "conversation_history": [
+      {
+        "sender": "jegan Tamil\nMr.\"J\"_Design talk's |Fueling Small Business Success with Visual Marketing Strategies | Graphic Designer & Social Media Specialist | webdesign",
+        "message": "Hi arnav,\nThanks for reaching out. I'd like to learn more.",
+        "timestamp": ""
+      }
+    ],
+    "metrics": {
+      "lead_score": 55,
+      "engagement_score": 0,
+      "response_time_avg": 0.0,
+      "message_count": 1,
+      "last_interaction": "2025-11-21T15:26:46.829833",
+      "stage": "initial_response",
+      "intent": "request_info",
+      "priority": "medium",
+      "tags": []
+    },
+    "last_updated": "2025-11-21T15:26:46.833245",
+    "created_at": "2025-11-21T15:26:46.833254"
   }
 }

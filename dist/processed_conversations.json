@@ -1,0 +1,61 @@
+{
+  "date": "2025-11-21",
+  "conversations_data": {
+    "content_6be1b22241ae57a8e35bd7c35595167c": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:07:02.113216",
+      "contact_name": "Fateh Education"
+    },
+    "content_d309efc46eb647f7141a7c54bffbdafa": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:07:10.683741",
+      "contact_name": "Sourabh Kesharwani"
+    },
+    "content_760240c3995bf81e5d45283015bc6100": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:07:20.511347",
+      "contact_name": "Naveen Shukla"
+    },
+    "content_8efc38bbce0d8ac73413dd258841631d": {
+      "message_count": 2,
+      "last_processed": "2025-11-21T16:07:31.297124",
+      "contact_name": "Amita singh"
+    },
+    "content_34d2321db2e274c9a189219216c1b147": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:07:47.897584",
+      "contact_name": "Sucheta Kulkarni"
+    },
+    "content_403ee654e1ec9e300e3c0ca06eb565f5": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:07:54.774382",
+      "contact_name": "Prachi Shukla"
+    },
+    "content_b84bc1cea4bc7fb4d7ff4925d7ef2599": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:08:01.383047",
+      "contact_name": "Shelindhra Das"
+    },
+    "content_7f7b243957de2d4cb9f5ad0fae26964a": {
+      "message_count": 3,
+      "last_processed": "2025-11-21T16:08:08.274375",
+      "contact_name": "Aditya Shendage"
+    },
+    "content_8bcfd3726e6491eb1b60ce2c0f045544": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:08:20.322439",
+      "contact_name": "Ar.Nakshatra Hasare"
+    },
+    "content_7592ab2f65e6994039edcb0ae8f08e98": {
+      "message_count": 1,
+      "last_processed": "2025-11-21T16:08:28.103496",
+      "contact_name": "jegan Tamil"
+    },
+    "fallback_10_1763721884": {
+      "message_count": 2,
+      "last_processed": "2025-11-21T16:14:49.350615",
+      "contact_name": "Naveen Shukla"
+    }
+  },
+  "saved_at": "2025-11-21T16:15:02.226312"
+}
