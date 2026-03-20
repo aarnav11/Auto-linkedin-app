@@ -1,1 +1,4 @@
 dist/
+chromedriver-win64/
+build/
+__pycache__/
